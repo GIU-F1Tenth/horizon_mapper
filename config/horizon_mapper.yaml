@@ -5,6 +5,7 @@ horizon_mapper_node:
   ros__parameters:
     # Logging
     enable_logging: true
+    enable_debugging: false
     
     
     optimal_trajectory_path: "/home/mohammedazab/ws/src/race_stack/horizon_mapper/horizon_mapper/optimal_trajectory.csv"

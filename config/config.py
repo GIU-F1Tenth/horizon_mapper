@@ -49,9 +49,6 @@ trajectory_tracking_weight= 0.1
 enable_safety_checks= True
 safety_check_distance= 0.3
 
-# Logging
-enable_logging= True
-
 # Optimized MPC parameters
 mpc_type= "kinematic" # "kinematic" or "dynamic"
 solver_type= "ipopt" # "ipopt" or "sqpmethod"
@@ -71,12 +68,7 @@ control_topic= "/drive"
 qos_depth= 10
 
 # Debug and Logging settings
-debug_logging_enabled= False
-performance_logging_enabled= True
-state_logging_enabled= False
-control_logging_enabled= True
-trajectory_logging_enabled= False
-solver_logging_enabled= False
-log_frequency_divider= 10  # Log every N iterations
+enable_debugging= False
+enable_logging= True
 
 yaml_config_enabled= False

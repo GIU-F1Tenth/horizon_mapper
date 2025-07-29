@@ -61,6 +61,8 @@ except ImportError as e:
             self.max_steering_angle = 0.5
             self.min_speed = 0.1
             self.odom_topic = "car_state/odom"
+            self.enable_logging = True
+            self.enable_debugging = False
     
     default_config = DefaultConfig()
 
@@ -83,7 +85,8 @@ class HorizonMapperNode(Node):
         super().__init__('horizon_mapper_node')
 
         # Declare ROS2 parameters
-        self.declare_parameter('enable_logging', False)
+        self.declare_parameter('enable_logging', default_config.enable_logging)
+        self.declare_parameter('enable_debugging', default_config.enable_debugging)
         self.declare_parameter('optimal_trajectory_path', default_config.optimal_trajectory_path)
         self.declare_parameter('reference_trajectory_path', default_config.reference_trajectory_path)
         self.declare_parameter('horizon_N', default_config.horizon_N)
@@ -95,6 +98,7 @@ class HorizonMapperNode(Node):
 
         # Load parameters from ROS2 parameter server
         self.enable_logging = self.get_parameter('enable_logging').value
+        self.enable_debugging = self.get_parameter('enable_debugging').value
         self.input_path = self.get_parameter('optimal_trajectory_path').value
         self.output_path = self.get_parameter('reference_trajectory_path').value
         self.horizon = self.get_parameter('horizon_N').value
@@ -180,12 +184,11 @@ class HorizonMapperNode(Node):
 
     def log_debug(self, message):
         """Log debug messages only if logging is enabled"""
-        if self.enable_logging:
+        if self.enable_debugging:
             self.get_logger().debug(message)
 
     def odometry_callback(self, msg):
         """Update current vehicle state from odometry"""
-        self.log_info("Odometry callback triggered")
         try:
             # Extract position
             self.current_vehicle_state.x = msg.pose.pose.position.x
@@ -314,13 +317,6 @@ class HorizonMapperNode(Node):
             
             if invalid_count > 0:
                 self.get_logger().warn(f"Removed {invalid_count} invalid trajectory points")
-            
-            # Log sample of loaded trajectory for debugging
-            if len(valid_points) > 0:
-                self.log_info(f"Sample trajectory points loaded:")
-                for i in range(min(3, len(valid_points))):
-                    state = valid_points[i]
-                    self.log_info(f"  Point {i}: x={state.x:.2f}, y={state.y:.2f}, v={state.v:.2f}, theta={state.theta:.2f}")
             
             self.log_info(f"Loaded {len(valid_points)} valid trajectory points (removed {invalid_count} invalid)")
             return valid_points
