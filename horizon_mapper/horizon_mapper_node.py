@@ -364,11 +364,8 @@ class HorizonMapperNode(Node):
             # Create trajectory array for MPC horizon
             trajectory_msg = VehicleStateArray()
 
-            # Start with current vehicle state as first point
-            trajectory_msg.states.append(self.current_vehicle_state)
-
             # Add reference trajectory points for the prediction horizon
-            for i in range(1, self.horizon):
+            for i in range(self.horizon):
                 ref_index = (closest_index + i) % len(self.reference_trajectory)
                 ref_point = self.reference_trajectory[ref_index]
 
