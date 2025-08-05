@@ -58,27 +58,25 @@ def process_csv(input_path, output_path, wheelbase=0.33, max_steering=0.5, min_v
 
 
 def load_ros2_params(config_path):
-    """Load parameters from ROS2 params.yaml file"""
+    """Load parameters from ROS2 horizon_mapper.yaml file"""
     try:
         with open(config_path, 'r') as f:
             config = yaml.safe_load(f)
 
-        # Extract mpc_controller parameters
-        if 'optimized_mpc_controller' in config:
-            mpc_params = config.get('optimized_mpc_controller', {}).get('ros__parameters', {})
-        elif 'mpc_controller' in config:
-            mpc_params = config.get('mpc_controller', {}).get('ros__parameters', {})
+        # Extract horizon_mapper_node parameters
+        if 'horizon_mapper_node' in config:
+            params = config.get('horizon_mapper_node', {}).get('ros__parameters', {})
         else:
-            mpc_params = {}
+            params = {}
 
         return {
-            'optimal_trajectory_path': mpc_params.get('optimal_trajectory_path'),
-            'reference_trajectory_path': mpc_params.get('reference_trajectory_path'),
-            'wheelbase': mpc_params.get('wheelbase', 0.33),
-            'max_steering_angle': mpc_params.get('max_steering_angle', 0.5),
-            'min_speed': mpc_params.get('min_speed', 0.1),
-            'enable_logging': mpc_params.get('enable_logging', True),
-            'horizon_N': mpc_params.get('horizon_N', 10)
+            'optimal_trajectory_path': params.get('optimal_trajectory_path'),
+            'reference_trajectory_path': params.get('reference_trajectory_path'),
+            'wheelbase': params.get('wheelbase', 0.33),
+            'max_steering_angle': params.get('max_steering_angle', 0.5),
+            'min_speed': params.get('min_speed', 0.1),
+            'enable_logging': params.get('enable_logging', True),
+            'horizon_N': params.get('horizon_N', 10)
         }
     except Exception as e:
         print(f"[✗] Error loading ROS2 config: {e}")
@@ -92,13 +90,13 @@ def find_config_file():
 
     # Search in common locations relative to script
     possible_configs = [
-        os.path.join(script_dir, '..', 'config', 'params.yaml'),
-        os.path.join(script_dir, 'config', 'params.yaml'),
-        os.path.join(script_dir, '..', 'params.yaml'),
-        os.path.join(script_dir, 'params.yaml'),
-        'config/params.yaml',
-        '../config/params.yaml',
-        'params.yaml'
+        os.path.join(script_dir, '..', 'config', 'horizon_mapper.yaml'),
+        os.path.join(script_dir, 'config', 'horizon_mapper.yaml'),
+        os.path.join(script_dir, '..', 'horizon_mapper.yaml'),
+        os.path.join(script_dir, 'horizon_mapper.yaml'),
+        'config/horizon_mapper.yaml',
+        '../config/horizon_mapper.yaml',
+        'horizon_mapper.yaml'
     ]
 
     for config_path in possible_configs:
@@ -220,7 +218,7 @@ if __name__ == '__main__':
             print("[✗] Missing trajectory paths in config file")
     else:
         print("[!] No config file found.")
-        print("Expected config file at: ../config/params.yaml")
+        print("Expected config file at: ../config/horizon_mapper.yaml")
         print("Usage examples:")
         print("  python3 preprocess_trajectory.py")
         print("  python3 preprocess_trajectory.py --create-sample")
