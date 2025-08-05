@@ -6,24 +6,79 @@ horizon_mapper_node:
     # Logging
     enable_logging: true
     enable_debugging: false
-    
-    
-    optimal_trajectory_path: "/home/mohammedazab/ws/src/race_stack/horizon_mapper/horizon_mapper/optimal_trajectory.csv"
-    reference_trajectory_path: "/home/mohammedazab/ws/src/race_stack/horizon_mapper/horizon_mapper/reference_trajectory.csv"
+
+    # Trajectory settings (paths will be resolved by launch file)
+    optimal_trajectory_path: "" 
+    reference_trajectory_path: "" 
 
     # MPC Horizon parameters
-    horizon_N: 8              # Number of prediction steps
-    horizon_T: 0.5            # Time horizon (seconds)
-    
+    horizon_N: 40 # Number of prediction steps
+    horizon_T: 0.05 # Time horizon (seconds)
+    lookahead_distance: 0.3 # Lookahead distance (meters)
+
     # Vehicle parameters
-    wheelbase: 0.33           # Vehicle wheelbase (meters)
-    max_steering_angle: 0.5   # Maximum steering angle (radians)
-    min_speed: 0.1            # Minimum velocity (m/s)
-    
-    # ROS topics
+    wheelbase: 0.33 # Vehicle wheelbase (meters)
+    max_steering_angle: 0.9 # Maximum steering angle (radians)
+    max_acceleration: 5 # Maximum acceleration (m/s^2)
+    max_deceleration: 3 # Maximum deceleration (m/s^2)
+    min_speed: 0.1 # Minimum velocity (m/s)
+    max_speed: 14.0 # Maximum velocity (m/s)
+
+    # Cost function weights
+    steering_weight: 1.0
+    acceleration_weight: 0.5
+    jerk_weight: 0.1
+    heading_weight: 2.0
+    position_weight: 5.0
+    velocity_weight: 1.0
+
+    # Hard constraints
+    enable_hard_constraints: false
+    hard_max_steering_angle: 0.4
+    hard_max_acceleration: 0.8
+    hard_max_deceleration: 0.8
+
+    # Obstacle avoidance
+    enable_obstacle_avoidance: false
+    obstacle_avoidance_weight: 0.5
+
+    # Speed control
+    enable_speed_control: true
+    speed_control_weight: 0.2
+
+    # Trajectory tracking
+    enable_trajectory_tracking: true
+    trajectory_tracking_weight: 0.1
+
+    # Safety checks
+    enable_safety_checks: true
+    safety_check_distance: 0.3
+
+    # Optimized MPC parameters
+    mpc_type: "kinematic" # "kinematic" or "dynamic"
+    solver_type: "ipopt" # "ipopt" or "sqpmethod"
+    control_hz: 10.0
+
+    # Safety Parameters
+    safety_timeout: 1.0
+    emergency_brake_threshold: 2.0
+
+    # Topics
     odom_topic: "/car_state/odom"
+    reference_topic: "/mpc/reference_trajectory"
+    status_topic: "/mpc/path_ready"
+    control_topic: "/drive"
+    bound_adjustment_topic: "/horizon_mapper/bound_adjustment"
+    constraint_status_topic: "/horizon_mapper/constraint_status"
+    visualization_topic: "/horizon_mapper/visualization"
+    corridor_visualization_topic: "/horizon_mapper/corridor_visualization"
+    velocity_visualization_topic: "/horizon_mapper/velocity_visualization"
+    reference_path_topic: "/horizon_mapper/reference_path"
+    constrained_path_topic: "/horizon_mapper/constrained_path"
     
-    # Trajectory processing parameters
-    trajectory_smoothing: true
-    velocity_smoothing: true
-    min_trajectory_length: 10
+
+    # QoS
+    qos_depth: 10
+
+    # Debug and Logging settings
+    yaml_config_enabled: false
