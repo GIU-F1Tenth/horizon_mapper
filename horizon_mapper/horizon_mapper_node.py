@@ -242,6 +242,16 @@ class HorizonMapperNode(Node):
             self.bound_adjustment_sub = self.create_subscription(
                 BoundAdjustment, '/mpc/bound_adjustments', self._bound_adjustment_callback, 10)
 
+        # LIDAR subscriber for /scan
+        from sensor_msgs.msg import LaserScan
+        self.lidar_scan = None
+        self.lidar_scan_sub = self.create_subscription(
+            LaserScan, '/scan', self._lidar_callback, 10)
+
+    def _lidar_callback(self, msg):
+        """Store latest LIDAR scan"""
+        self.lidar_scan = msg
+
     def _create_publishers(self):
         """Create ROS2 publishers"""
         # Legacy publishers (always available)
@@ -852,11 +862,41 @@ class HorizonMapperNode(Node):
         self._publish_velocity_visualization()
 
     def _publish_corridor_visualization(self):
-        """Publish corridor visualization with bounds"""
+        """Publish corridor visualization with bounds and LIDAR risk coloring"""
         marker_array = MarkerArray()
+
+        # Risk thresholds (meters)
+        danger_thresh = 0.5
+        caution_thresh = 1.0
 
         # Find current trajectory segment
         start_index = self._find_closest_point_index()
+
+        # Helper to get LIDAR risk at a point
+        def get_lidar_risk(x, y):
+            if self.lidar_scan is None:
+                return None  # No scan yet
+            # Transform marker position to LIDAR frame (assume same for now)
+            # Compute angle and range from LIDAR origin
+            dx = x - self.current_vehicle_state.x
+            dy = y - self.current_vehicle_state.y
+            r = math.sqrt(dx**2 + dy**2)
+            angle = math.atan2(dy, dx)
+            # LIDAR scan angle range
+            scan = self.lidar_scan
+            angle_min = scan.angle_min
+            angle_max = scan.angle_max
+            angle_inc = scan.angle_increment
+            # Find closest index
+            idx = int((angle - angle_min) / angle_inc)
+            if idx < 0 or idx >= len(scan.ranges):
+                return None
+            scan_range = scan.ranges[idx]
+            # If scan_range is inf or nan, treat as no obstacle
+            if not np.isfinite(scan_range):
+                return None
+            # Return distance to obstacle at that angle
+            return scan_range - r
 
         # Create corridor markers
         for i in range(min(self.horizon, len(self.trajectory_points) - start_index)):
@@ -871,6 +911,8 @@ class HorizonMapperNode(Node):
             normal_x, normal_y = self._compute_path_normal(point_index)
 
             # Left boundary marker
+            left_x = traj_point['x'] + normal_x * left_bound
+            left_y = traj_point['y'] + normal_y * left_bound
             left_marker = Marker()
             left_marker.header.stamp = self.get_clock().now().to_msg()
             left_marker.header.frame_id = self.map_frame
@@ -879,22 +921,35 @@ class HorizonMapperNode(Node):
             left_marker.type = Marker.SPHERE
             left_marker.action = Marker.ADD
 
-            left_marker.pose.position.x = traj_point['x'] + normal_x * left_bound
-            left_marker.pose.position.y = traj_point['y'] + normal_y * left_bound
+            left_marker.pose.position.x = left_x
+            left_marker.pose.position.y = left_y
             left_marker.pose.position.z = 0.0
 
             left_marker.scale.x = 0.1
             left_marker.scale.y = 0.1
             left_marker.scale.z = 0.1
 
-            left_marker.color.r = 1.0
-            left_marker.color.g = 0.0
-            left_marker.color.b = 0.0
+            # LIDAR risk color
+            risk = get_lidar_risk(left_x, left_y)
+            if risk is not None and risk < danger_thresh:
+                left_marker.color.r = 1.0
+                left_marker.color.g = 0.0
+                left_marker.color.b = 0.0
+            elif risk is not None and risk < caution_thresh:
+                left_marker.color.r = 1.0
+                left_marker.color.g = 1.0
+                left_marker.color.b = 0.0
+            else:
+                left_marker.color.r = 0.0
+                left_marker.color.g = 0.0
+                left_marker.color.b = 1.0
             left_marker.color.a = confidence
 
             marker_array.markers.append(left_marker)
 
             # Right boundary marker
+            right_x = traj_point['x'] - normal_x * right_bound
+            right_y = traj_point['y'] - normal_y * right_bound
             right_marker = Marker()
             right_marker.header.stamp = self.get_clock().now().to_msg()
             right_marker.header.frame_id = self.map_frame
@@ -903,14 +958,26 @@ class HorizonMapperNode(Node):
             right_marker.type = Marker.SPHERE
             right_marker.action = Marker.ADD
 
-            right_marker.pose.position.x = traj_point['x'] - normal_x * right_bound
-            right_marker.pose.position.y = traj_point['y'] - normal_y * right_bound
+            right_marker.pose.position.x = right_x
+            right_marker.pose.position.y = right_y
             right_marker.pose.position.z = 0.0
 
             right_marker.scale = left_marker.scale
-            right_marker.color.r = 0.0
-            right_marker.color.g = 0.0
-            right_marker.color.b = 1.0
+
+            # LIDAR risk color
+            risk = get_lidar_risk(right_x, right_y)
+            if risk is not None and risk < danger_thresh:
+                right_marker.color.r = 1.0
+                right_marker.color.g = 0.0
+                right_marker.color.b = 0.0
+            elif risk is not None and risk < caution_thresh:
+                right_marker.color.r = 1.0
+                right_marker.color.g = 1.0
+                right_marker.color.b = 0.0
+            else:
+                right_marker.color.r = 0.0
+                right_marker.color.g = 0.0
+                right_marker.color.b = 1.0
             right_marker.color.a = confidence
 
             marker_array.markers.append(right_marker)
