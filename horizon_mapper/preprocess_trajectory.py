@@ -85,18 +85,10 @@ def load_ros2_params(config_path):
 
 def find_config_file():
     """Automatically find config file in standard locations"""
-    # Get script directory
     script_dir = os.path.dirname(os.path.abspath(__file__))
-
-    # Search in common locations relative to script
+    
     possible_configs = [
         os.path.join(script_dir, '..', 'config', 'horizon_mapper.yaml'),
-        os.path.join(script_dir, 'config', 'horizon_mapper.yaml'),
-        os.path.join(script_dir, '..', 'horizon_mapper.yaml'),
-        os.path.join(script_dir, 'horizon_mapper.yaml'),
-        'config/horizon_mapper.yaml',
-        '../config/horizon_mapper.yaml',
-        'horizon_mapper.yaml'
     ]
 
     for config_path in possible_configs:
