@@ -80,5 +80,11 @@ horizon_mapper_node:
     # QoS
     qos_depth: 10
 
-    # Debug and Logging settings
-    yaml_config_enabled: false
+ 
+    default_left_bound: 1.0 
+    default_right_bound: 1.0 
+    default_confidence: 0.8  
+    adaptive_bounds: true   
+    publish_visualization: true 
+    velocity_color_scale: 10.0 
+    map_frame: "map"          

@@ -56,7 +56,7 @@ import numpy as np
 import colorsys
 import os
 from typing import List, Tuple, Optional
-from tf_transformations import euler_from_quaternion
+from tf_transformations import euler_from_quaternion, quaternion_from_euler
 from ament_index_python.packages import get_package_share_directory
 
 # Default configuration class - provides fallback values
@@ -494,6 +494,20 @@ class HorizonMapperNode(Node):
                 self.get_logger().warn(f"Removed {invalid_count} invalid trajectory points")
 
             self.log_info(f"Loaded {len(valid_points)} valid trajectory points (removed {invalid_count} invalid)")
+
+            # Populate trajectory_points for enhanced mode visualization
+            if self.enhanced_mode:
+                self.trajectory_points = []
+                for state in valid_points:
+                    point = {
+                        'x': state.x,
+                        'y': state.y,
+                        'v': state.v,
+                        'theta': state.theta
+                    }
+                    self.trajectory_points.append(point)
+                self.log_info(f"Populated {len(self.trajectory_points)} trajectory points for enhanced visualization")
+
             return valid_points
 
         except Exception as e:
@@ -949,59 +963,164 @@ class HorizonMapperNode(Node):
         return color
 
     def _publish_velocity_visualization(self):
-        """Publish velocity-colored path visualization"""
+        """Publish improved velocity visualization with elevation and heatmap"""
         marker_array = MarkerArray()
 
-        # Create line strip marker for velocity path
-        line_marker = Marker()
-        line_marker.header.stamp = self.get_clock().now().to_msg()
-        line_marker.header.frame_id = self.map_frame
-        line_marker.ns = "velocity_path"
-        line_marker.id = 0
-        line_marker.type = Marker.LINE_STRIP
-        line_marker.action = Marker.ADD
+        # Method 1: Create velocity heatmap using colored cylinders on the ground
+        for i, point in enumerate(self.trajectory_points[::3]):  # Sample every 3rd point for density
+            cylinder_marker = Marker()
+            cylinder_marker.header.stamp = self.get_clock().now().to_msg()
+            cylinder_marker.header.frame_id = self.map_frame
+            cylinder_marker.ns = "velocity_heatmap"
+            cylinder_marker.id = i
+            cylinder_marker.type = Marker.CYLINDER
+            cylinder_marker.action = Marker.ADD
 
-        line_marker.scale.x = 0.1  # Line width
-        line_marker.color.r = 1.0
-        line_marker.color.g = 1.0
-        line_marker.color.b = 1.0
-        line_marker.color.a = 1.0
+            # Position on the ground
+            cylinder_marker.pose.position.x = point['x']
+            cylinder_marker.pose.position.y = point['y']
+            cylinder_marker.pose.position.z = 0.01  # Slightly above ground
 
-        # Add points with velocity-based height offset
-        for i, point in enumerate(self.trajectory_points[::5]):  # Sample every 5th point
-            p = Point()
-            p.x = point['x']
-            p.y = point['y']
-            p.z = point['v'] * 0.1  # Height proportional to velocity
-            line_marker.points.append(p)
+            # Scale based on velocity - wider cylinders for higher speeds
+            base_radius = 0.15
+            velocity_scale = min(point['v'] / self.velocity_color_scale, 1.0)
+            radius = base_radius + (velocity_scale * 0.1)
 
-            # Add color for each point
-            color = self._velocity_to_color(point['v'])
-            line_marker.colors.append(color)
+            cylinder_marker.scale.x = radius * 2  # Diameter
+            cylinder_marker.scale.y = radius * 2  # Diameter
+            cylinder_marker.scale.z = 0.02  # Thin disk
 
-        marker_array.markers.append(line_marker)
+            # Color based on velocity
+            cylinder_marker.color = self._velocity_to_color(point['v'])
+            cylinder_marker.color.a = 0.7  # Semi-transparent
 
-        # Create sphere markers for better visibility
-        for i, point in enumerate(self.trajectory_points[::10]):  # Sample every 10th point
-            sphere_marker = Marker()
-            sphere_marker.header.stamp = self.get_clock().now().to_msg()
-            sphere_marker.header.frame_id = self.map_frame
-            sphere_marker.ns = "velocity_spheres"
-            sphere_marker.id = i
-            sphere_marker.type = Marker.SPHERE
-            sphere_marker.action = Marker.ADD
+            marker_array.markers.append(cylinder_marker)
 
-            sphere_marker.pose.position.x = point['x']
-            sphere_marker.pose.position.y = point['y']
-            sphere_marker.pose.position.z = point['v'] * 0.1
+        # Method 2: Create elevation profile using triangular strips
+        elevation_marker = Marker()
+        elevation_marker.header.stamp = self.get_clock().now().to_msg()
+        elevation_marker.header.frame_id = self.map_frame
+        elevation_marker.ns = "velocity_elevation"
+        elevation_marker.id = 0
+        elevation_marker.type = Marker.TRIANGLE_LIST
+        elevation_marker.action = Marker.ADD
 
-            sphere_marker.scale.x = 0.2
-            sphere_marker.scale.y = 0.2
-            sphere_marker.scale.z = 0.2
+        elevation_marker.scale.x = 1.0
+        elevation_marker.scale.y = 1.0
+        elevation_marker.scale.z = 1.0
 
-            sphere_marker.color = self._velocity_to_color(point['v'])
+        # Create elevation profile with triangular mesh
+        width = 0.3  # Width of the elevation strip
+        height_scale = 0.5  # Scale factor for height
 
-            marker_array.markers.append(sphere_marker)
+        for i in range(len(self.trajectory_points) - 1):
+            if i % 2 != 0:  # Skip every other point for performance
+                continue
+
+            p1 = self.trajectory_points[i]
+            p2 = self.trajectory_points[i + 1]
+
+            # Calculate normal vector for width
+            dx = p2['x'] - p1['x']
+            dy = p2['y'] - p1['y']
+            length = math.sqrt(dx**2 + dy**2)
+            if length > 0:
+                normal_x = -dy / length * width / 2
+                normal_y = dx / length * width / 2
+            else:
+                normal_x = normal_y = 0
+
+            # Heights based on velocity
+            h1 = p1['v'] * height_scale
+            h2 = p2['v'] * height_scale
+
+            # Create two triangles for this segment
+            # Triangle 1
+            # Bottom left
+            pt1 = Point()
+            pt1.x = p1['x'] - normal_x
+            pt1.y = p1['y'] - normal_y
+            pt1.z = 0.0
+            elevation_marker.points.append(pt1)
+            elevation_marker.colors.append(self._velocity_to_color(p1['v']))
+
+            # Top left
+            pt2 = Point()
+            pt2.x = p1['x'] - normal_x
+            pt2.y = p1['y'] - normal_y
+            pt2.z = h1
+            elevation_marker.points.append(pt2)
+            elevation_marker.colors.append(self._velocity_to_color(p1['v']))
+
+            # Bottom right
+            pt3 = Point()
+            pt3.x = p2['x'] - normal_x
+            pt3.y = p2['y'] - normal_y
+            pt3.z = 0.0
+            elevation_marker.points.append(pt3)
+            elevation_marker.colors.append(self._velocity_to_color(p2['v']))
+
+            # Triangle 2
+            # Top left
+            pt4 = Point()
+            pt4.x = p1['x'] - normal_x
+            pt4.y = p1['y'] - normal_y
+            pt4.z = h1
+            elevation_marker.points.append(pt4)
+            elevation_marker.colors.append(self._velocity_to_color(p1['v']))
+
+            # Top right
+            pt5 = Point()
+            pt5.x = p2['x'] - normal_x
+            pt5.y = p2['y'] - normal_y
+            pt5.z = h2
+            elevation_marker.points.append(pt5)
+            elevation_marker.colors.append(self._velocity_to_color(p2['v']))
+
+            # Bottom right
+            pt6 = Point()
+            pt6.x = p2['x'] - normal_x
+            pt6.y = p2['y'] - normal_y
+            pt6.z = 0.0
+            elevation_marker.points.append(pt6)
+            elevation_marker.colors.append(self._velocity_to_color(p2['v']))
+
+        marker_array.markers.append(elevation_marker)
+
+        # Method 3: Add velocity arrows for direction and magnitude
+        for i, point in enumerate(self.trajectory_points[::8]):  # Sample every 8th point
+            arrow_marker = Marker()
+            arrow_marker.header.stamp = self.get_clock().now().to_msg()
+            arrow_marker.header.frame_id = self.map_frame
+            arrow_marker.ns = "velocity_arrows"
+            arrow_marker.id = i
+            arrow_marker.type = Marker.ARROW
+            arrow_marker.action = Marker.ADD
+
+            # Position
+            arrow_marker.pose.position.x = point['x']
+            arrow_marker.pose.position.y = point['y']
+            arrow_marker.pose.position.z = 0.1
+
+            # Orientation based on heading
+            quat = quaternion_from_euler(0, 0, point['theta'])
+            arrow_marker.pose.orientation.x = quat[0]
+            arrow_marker.pose.orientation.y = quat[1]
+            arrow_marker.pose.orientation.z = quat[2]
+            arrow_marker.pose.orientation.w = quat[3]
+
+            # Scale based on velocity
+            velocity_scale = min(point['v'] / self.velocity_color_scale, 1.0)
+            arrow_length = 0.2 + (velocity_scale * 0.3)
+            arrow_marker.scale.x = arrow_length  # Length
+            arrow_marker.scale.y = 0.05  # Width
+            arrow_marker.scale.z = 0.05  # Height
+
+            # Color based on velocity
+            arrow_marker.color = self._velocity_to_color(point['v'])
+            arrow_marker.color.a = 0.8
+
+            marker_array.markers.append(arrow_marker)
 
         self.velocity_path_pub.publish(marker_array)
 
