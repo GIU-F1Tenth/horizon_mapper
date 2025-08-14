@@ -33,6 +33,8 @@ from geometry_msgs.msg import PoseStamped, PoseWithCovarianceStamped, Point
 from std_msgs.msg import Bool, Header, ColorRGBA
 from visualization_msgs.msg import Marker, MarkerArray
 from tf2_ros import Buffer, TransformListener
+from std_srvs.srv import Trigger
+from std_msgs.msg import Int16
 from giu_f1t_interfaces.msg import (
     VehicleState,
     VehicleStateArray,
@@ -133,6 +135,9 @@ class HorizonMapperNode(Node):
 
         # Create timers
         self._create_timers()
+
+        # Service: allow external controller to request trajectory reload/resample
+        self.override_service = self.create_service(Trigger, '/horizon_mapper/override_path', self._override_service_cb)
 
         # Run preprocessing on startup
         self.preprocess_and_load_trajectory()
@@ -247,6 +252,14 @@ class HorizonMapperNode(Node):
         self.lidar_scan = None
         self.lidar_scan_sub = self.create_subscription(
             LaserScan, '/scan', self._lidar_callback, 10)
+        
+        # Horizon subscriber for dynamically 
+        self.horizon_sub = self.create_subscription(
+            Int16,
+            "control/dynamic/horizon_n",
+            self.horizon_callback,
+            10
+        )
 
     def _lidar_callback(self, msg):
         """Store latest LIDAR scan"""
@@ -366,6 +379,18 @@ class HorizonMapperNode(Node):
         if self.enable_debugging:
             self.get_logger().debug(message)
 
+    def horizon_callback(self, msg):
+        """Update current horizon_N variable from dynamic topic"""
+        try:
+            new_horizon = int(msg.data)
+            if new_horizon > 0:
+                self.horizon = new_horizon
+                self.get_logger().info(f"Dynamic horizon_N updated to {self.horizon}")
+            else:
+                self.get_logger().warn(f"Ignored invalid horizon_N value: {new_horizon}")
+        except Exception as e:
+            self.get_logger().error(f"Error updating horizon_N: {e}")
+
     def odometry_callback(self, msg):
         """Update current vehicle state from odometry"""
         try:
@@ -454,6 +479,20 @@ class HorizonMapperNode(Node):
         except Exception as e:
             self.get_logger().error(f"Error during preprocessing: {str(e)}")
             self.path_ready = False
+
+    def _override_service_cb(self, request, response):
+        """Service callback to force reloading/resampling of the reference trajectory.
+
+        This allows the AERO controller to request an update mid-race 
+        """
+        try:
+            self.preprocess_and_load_trajectory()
+            response.success = bool(self.path_ready)
+            response.message = 'reference_trajectory reloaded' if self.path_ready else 'failed to reload trajectory'
+        except Exception as e:
+            response.success = False
+            response.message = f'override failed: {e}'
+        return response
 
     def load_trajectory_from_csv(self, path):
         """Load processed trajectory from CSV file with theta support"""
