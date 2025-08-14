@@ -33,6 +33,7 @@ from geometry_msgs.msg import PoseStamped, PoseWithCovarianceStamped, Point
 from std_msgs.msg import Bool, Header, ColorRGBA
 from visualization_msgs.msg import Marker, MarkerArray
 from tf2_ros import Buffer, TransformListener
+from std_srvs.srv import Trigger
 from giu_f1t_interfaces.msg import (
     VehicleState,
     VehicleStateArray,
@@ -133,6 +134,9 @@ class HorizonMapperNode(Node):
 
         # Create timers
         self._create_timers()
+
+        # Service: allow external controller to request trajectory reload/resample
+        self.override_service = self.create_service(Trigger, '/horizon_mapper/override_path', self._override_service_cb)
 
         # Run preprocessing on startup
         self.preprocess_and_load_trajectory()
@@ -454,6 +458,20 @@ class HorizonMapperNode(Node):
         except Exception as e:
             self.get_logger().error(f"Error during preprocessing: {str(e)}")
             self.path_ready = False
+
+    def _override_service_cb(self, request, response):
+        """Service callback to force reloading/resampling of the reference trajectory.
+
+        This allows the AERO controller to request an update mid-race 
+        """
+        try:
+            self.preprocess_and_load_trajectory()
+            response.success = bool(self.path_ready)
+            response.message = 'reference_trajectory reloaded' if self.path_ready else 'failed to reload trajectory'
+        except Exception as e:
+            response.success = False
+            response.message = f'override failed: {e}'
+        return response
 
     def load_trajectory_from_csv(self, path):
         """Load processed trajectory from CSV file with theta support"""
