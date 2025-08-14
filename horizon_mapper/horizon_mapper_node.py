@@ -34,6 +34,7 @@ from std_msgs.msg import Bool, Header, ColorRGBA
 from visualization_msgs.msg import Marker, MarkerArray
 from tf2_ros import Buffer, TransformListener
 from std_srvs.srv import Trigger
+from std_msgs.msg import Int16
 from giu_f1t_interfaces.msg import (
     VehicleState,
     VehicleStateArray,
@@ -251,6 +252,14 @@ class HorizonMapperNode(Node):
         self.lidar_scan = None
         self.lidar_scan_sub = self.create_subscription(
             LaserScan, '/scan', self._lidar_callback, 10)
+        
+        # Horizon subscriber for dynamically 
+        self.horizon_sub = self.create_subscription(
+            Int16,
+            "control/dynamic/horizon_n",
+            self.horizon_callback,
+            10
+        )
 
     def _lidar_callback(self, msg):
         """Store latest LIDAR scan"""
@@ -369,6 +378,18 @@ class HorizonMapperNode(Node):
         """Log debug messages only if logging is enabled"""
         if self.enable_debugging:
             self.get_logger().debug(message)
+
+    def horizon_callback(self, msg):
+        """Update current horizon_N variable from dynamic topic"""
+        try:
+            new_horizon = int(msg.data)
+            if new_horizon > 0:
+                self.horizon = new_horizon
+                self.get_logger().info(f"Dynamic horizon_N updated to {self.horizon}")
+            else:
+                self.get_logger().warn(f"Ignored invalid horizon_N value: {new_horizon}")
+        except Exception as e:
+            self.get_logger().error(f"Error updating horizon_N: {e}")
 
     def odometry_callback(self, msg):
         """Update current vehicle state from odometry"""
