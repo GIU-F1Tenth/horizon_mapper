@@ -7,8 +7,8 @@ Author: Mohammed Azab (Mohammed@azab.io)
 
 Description:
 ------------
-ROS2 node for trajectory mapping and predictive horizon generation for MPC-based autonomous vehicles.
-This node provides adaptive bounds, visualization, and runtime adjustments.
+ROS2 node for trajectory mapping and predictive horizon generation for model-based controllers.
+Provides adaptive bounds, visualization, and runtime adjustments.
 
 Features:
 - Loads and preprocesses trajectory data
@@ -79,13 +79,8 @@ class HorizonMapperNode(Node):
     """
     Horizon Mapper Node
 
-    This node:
-    1. Loads and preprocesses trajectory data
-    2. Publishes reference trajectories for MPC horizon
-    3. Publishes constrained trajectories with adaptive bounds
-    4. Provides visualization capabilities
-    5. Handles runtime bound adjustments
-    6. Provides trajectory validation and error handling
+    Publishes reference trajectories with predictive horizon for model-based controllers.
+    Supports constrained trajectories with adaptive bounds, visualization, and runtime adjustments.
     """
 
     def __init__(self):
@@ -98,8 +93,8 @@ class HorizonMapperNode(Node):
         # Initialize state variables
         self._initialize_state_variables()
 
-        # Initialize TF2 if enhanced mode
-        if self.enhanced_mode:
+        # Initialize TF2 for visualization
+        if self.publish_visualization:
             self.tf_buffer = Buffer()
             self.tf_listener = TransformListener(self.tf_buffer, self)
 
@@ -120,10 +115,7 @@ class HorizonMapperNode(Node):
     def _declare_parameters(self):
         """Declare all ROS2 parameters with descriptions"""
 
-        self.declare_parameter('enhanced_mode', True, ParameterDescriptor(
-            description='Enable enhanced features (constraints, visualization)'))
-
-        # Legacy parameters
+        # Core parameters
         self.declare_parameter('enable_logging', default_config.enable_logging)
         self.declare_parameter('enable_debugging', default_config.enable_debugging)
         self.declare_parameter('path_topic', default_config.path_topic,
@@ -179,9 +171,7 @@ class HorizonMapperNode(Node):
 
     def _load_parameters(self):
         """Load parameters from parameter server"""
-        self.enhanced_mode = True
-
-        # Legacy parameters
+        # Core parameters
         self.enable_logging = self.get_parameter('enable_logging').value
         self.enable_debugging = self.get_parameter('enable_debugging').value
         self.path_topic = self.get_parameter('path_topic').value
@@ -205,7 +195,7 @@ class HorizonMapperNode(Node):
         self.initialpose_topic = self.get_parameter('initialpose_topic').value
         self.horizon_topic = self.get_parameter('horizon_topic').value
 
-        # Enhanced parameters
+        # Constraint and visualization parameters
         self.default_left_bound = self.get_parameter('default_left_bound').value
         self.default_right_bound = self.get_parameter('default_right_bound').value
         self.default_confidence = self.get_parameter('default_confidence').value
@@ -229,8 +219,8 @@ class HorizonMapperNode(Node):
         self.current_pose_estimate = None
         self.trajectory_index = 0
 
-        # Enhanced state variables
-        if self.enhanced_mode:
+        # Visualization and constraint state variables
+        if self.publish_visualization:
             self.trajectory_points = []
             self.current_pose = None
             self.current_velocity = 0.0
@@ -266,8 +256,8 @@ class HorizonMapperNode(Node):
         self.path_sub = self.create_subscription(
             Path, self.path_topic, self._path_callback, self.qos_depth)
 
-        # Enhanced subscribers
-        if self.enhanced_mode and self.adaptive_bounds:
+        # Adaptive bounds subscriber
+        if self.publish_visualization and self.adaptive_bounds:
             self.bound_adjustment_sub = self.create_subscription(
                 BoundAdjustment, self.bound_adjustment_topic, self._bound_adjustment_callback, self.qos_depth)
         
@@ -320,9 +310,17 @@ class HorizonMapperNode(Node):
             # Update reference trajectory
             self.reference_trajectory = new_trajectory
             
-            # Also update trajectory_points for enhanced mode
-            if self.enhanced_mode:
-                self.trajectory_points = new_trajectory
+            # Update trajectory points for visualization
+            if self.publish_visualization:
+                self.trajectory_points = []
+                for state in new_trajectory:
+                    point = {
+                        'x': state.x,
+                        'y': state.y,
+                        'v': state.v,
+                        'theta': state.theta
+                    }
+                    self.trajectory_points.append(point)
             
             self.path_ready = True
             self.get_logger().info(f"Updated reference trajectory with {len(self.reference_trajectory)} points")
@@ -337,8 +335,8 @@ class HorizonMapperNode(Node):
         self.trajectory_pub = self.create_publisher(VehicleStateArray, self.reference_trajectory_topic, self.qos_depth)
         self.status_pub = self.create_publisher(Bool, self.status_topic, self.qos_depth)
 
-        # Enhanced publishers
-        if self.enhanced_mode:
+        # Visualization and constraint publishers
+        if self.publish_visualization:
             self.constrained_trajectory_pub = self.create_publisher(
                 ConstrainedVehicleStateArray, self.constrained_trajectory_topic, self.qos_depth)
             self.constraint_status_pub = self.create_publisher(
@@ -353,11 +351,11 @@ class HorizonMapperNode(Node):
     def _create_timers(self):
         """Create ROS2 timers"""
         # Main timer for trajectory publishing
-        self.publish_timer = self.create_timer(0.1, self.publish_predictive_trajectory)  # 10 Hz for MPC
+        self.publish_timer = self.create_timer(0.1, self.publish_predictive_trajectory)
 
-        # Enhanced visualization timer
-        if self.enhanced_mode and self.publish_visualization:
-            self.viz_timer = self.create_timer(0.2, self._publish_visualization)  # 5 Hz
+        # Visualization timer
+        if self.publish_visualization:
+            self.viz_timer = self.create_timer(0.2, self._publish_visualization)
 
     def log_info(self, message):
         """Log info messages only if logging is enabled"""
@@ -401,11 +399,10 @@ class HorizonMapperNode(Node):
             # Set the theta (heading angle) - this is critical for MPC!
             self.current_vehicle_state.theta = yaw
 
-            # For now, set delta to 0 (we'll calculate this from trajectory tracking)
             self.current_vehicle_state.delta = 0.0
 
-            # Update enhanced state if in enhanced mode
-            if self.enhanced_mode:
+            # Update visualization state
+            if self.publish_visualization:
                 self.current_pose = msg.pose.pose
                 self.current_velocity = self.current_vehicle_state.v
                 self.current_heading = self.current_vehicle_state.theta
@@ -617,11 +614,11 @@ class HorizonMapperNode(Node):
             else:
                 self.get_logger().warn("Empty trajectory created, not publishing")
 
-    # Enhanced mode methods
+    # Visualization and constraint methods
 
     def _bound_adjustment_callback(self, msg: BoundAdjustment):
-        """Handle bound adjustment messages from MPC (enhanced mode only)"""
-        if not self.enhanced_mode or not self.adaptive_bounds:
+        """Handle bound adjustment messages"""
+        if not self.publish_visualization or not self.adaptive_bounds:
             return
 
         if msg.reset_to_default:
@@ -640,21 +637,25 @@ class HorizonMapperNode(Node):
                                    f"confidence={self.confidence_adjustment:.3f}")
 
     def _find_closest_point_index(self) -> int:
-        """Find the closest trajectory point to current position (enhanced mode)"""
-        if not self.enhanced_mode or not hasattr(self, 'trajectory_points'):
+        """Find the closest trajectory point to current position"""
+        if not self.publish_visualization or not hasattr(self, 'trajectory_points') or len(self.trajectory_points) == 0:
             return self.find_closest_trajectory_point()
 
-        if not self.path_ready or self.current_pose is None:
+        if not self.path_ready:
             return 0
 
-        current_x = self.current_pose.position.x
-        current_y = self.current_pose.position.y
+        # Use current vehicle state for position
+        current_x = self.current_vehicle_state.x
+        current_y = self.current_vehicle_state.y
 
         min_distance = float('inf')
         closest_index = 0
 
         for i, point in enumerate(self.trajectory_points):
-            distance = math.sqrt((point['x'] - current_x)**2 + (point['y'] - current_y)**2)
+            # Handle both dict and VehicleState formats
+            px = point['x'] if isinstance(point, dict) else point.x
+            py = point['y'] if isinstance(point, dict) else point.y
+            distance = math.sqrt((px - current_x)**2 + (py - current_y)**2)
             if distance < min_distance:
                 min_distance = distance
                 closest_index = i
@@ -663,16 +664,27 @@ class HorizonMapperNode(Node):
 
     def _compute_path_normal(self, index: int) -> Tuple[float, float]:
         """Compute the normal vector to the path at given index"""
-        if not hasattr(self, 'trajectory_points') or index >= len(self.trajectory_points) - 1:
+        if not hasattr(self, 'trajectory_points') or len(self.trajectory_points) == 0 or index >= len(self.trajectory_points) - 1:
             return 0.0, 1.0
+
+        # Helper to get x, y from point (handles both dict and VehicleState)
+        def get_xy(point):
+            if isinstance(point, dict):
+                return point['x'], point['y']
+            else:
+                return point.x, point.y
 
         # Use finite differences to compute tangent
         if index > 0:
-            dx = self.trajectory_points[index + 1]['x'] - self.trajectory_points[index - 1]['x']
-            dy = self.trajectory_points[index + 1]['y'] - self.trajectory_points[index - 1]['y']
+            x1, y1 = get_xy(self.trajectory_points[index - 1])
+            x2, y2 = get_xy(self.trajectory_points[index + 1])
+            dx = x2 - x1
+            dy = y2 - y1
         else:
-            dx = self.trajectory_points[index + 1]['x'] - self.trajectory_points[index]['x']
-            dy = self.trajectory_points[index + 1]['y'] - self.trajectory_points[index]['y']
+            x1, y1 = get_xy(self.trajectory_points[index])
+            x2, y2 = get_xy(self.trajectory_points[index + 1])
+            dx = x2 - x1
+            dy = y2 - y1
 
         # Normalize tangent
         length = math.sqrt(dx**2 + dy**2)
@@ -697,15 +709,22 @@ class HorizonMapperNode(Node):
 
         # Curvature-based scaling
         curvature_factor = 1.0
-        if hasattr(self, 'trajectory_points') and index > 0 and index < len(self.trajectory_points) - 1:
+        if hasattr(self, 'trajectory_points') and len(self.trajectory_points) > 0 and index > 0 and index < len(self.trajectory_points) - 1:
+            # Helper to get x, y from point
+            def get_xy(point):
+                if isinstance(point, dict):
+                    return point['x'], point['y']
+                else:
+                    return point.x, point.y
+
             # Approximate curvature using three points
-            p1 = self.trajectory_points[index - 1]
-            p2 = self.trajectory_points[index]
-            p3 = self.trajectory_points[index + 1]
+            x1, y1 = get_xy(self.trajectory_points[index - 1])
+            x2, y2 = get_xy(self.trajectory_points[index])
+            x3, y3 = get_xy(self.trajectory_points[index + 1])
 
             # Compute approximate curvature
-            dx1, dy1 = p2['x'] - p1['x'], p2['y'] - p1['y']
-            dx2, dy2 = p3['x'] - p2['x'], p3['y'] - p2['y']
+            dx1, dy1 = x2 - x1, y2 - y1
+            dx2, dy2 = x3 - x2, y3 - y2
 
             cross_product = dx1 * dy2 - dy1 * dx2
             curvature = abs(cross_product) / (math.sqrt(dx1**2 + dy1**2) * math.sqrt(dx2**2 + dy2**2) + 1e-6)
@@ -720,9 +739,12 @@ class HorizonMapperNode(Node):
 
         return left_bound, right_bound, confidence
 
-    def _publish_enhanced_trajectory(self):
-        """Publish enhanced trajectory with constraints"""
-        if not self.enhanced_mode or not hasattr(self, 'trajectory_points') or len(self.trajectory_points) == 0:
+    def _publish_constrained_trajectory(self):
+        """Publish trajectory with adaptive constraints"""
+        if not self.publish_visualization or not hasattr(self, 'trajectory_points') or len(self.trajectory_points) == 0:
+            return
+
+        if not self.path_ready:
             return
 
         # Find starting index
@@ -738,12 +760,19 @@ class HorizonMapperNode(Node):
             point_index = (start_index + i) % len(self.trajectory_points)
             traj_point = self.trajectory_points[point_index]
 
+            # Helper to get values from point (handles both dict and VehicleState)
+            def get_value(point, key):
+                if isinstance(point, dict):
+                    return point[key]
+                else:
+                    return getattr(point, key)
+
             # Create constrained state
             state = ConstrainedVehicleState()
-            state.x = traj_point['x']
-            state.y = traj_point['y']
-            state.theta = traj_point['theta']
-            state.v_ref = max(traj_point['v'], self.min_speed)
+            state.x = get_value(traj_point, 'x')
+            state.y = get_value(traj_point, 'y')
+            state.theta = get_value(traj_point, 'theta')
+            state.v_ref = max(get_value(traj_point, 'v'), self.min_speed)
 
             # Compute adaptive bounds
             left_bound, right_bound, confidence = self._compute_adaptive_bounds(
@@ -763,7 +792,7 @@ class HorizonMapperNode(Node):
 
     def _publish_constraint_status(self, states: List[ConstrainedVehicleState]):
         """Publish constraint status"""
-        if not self.enhanced_mode:
+        if not self.publish_visualization:
             return
 
         status_msg = ConstraintStatus()
@@ -786,8 +815,8 @@ class HorizonMapperNode(Node):
         self.constraint_status_pub.publish(status_msg)
 
     def _publish_visualization(self):
-        """Publish advanced visualization markers (enhanced mode only)"""
-        if not self.enhanced_mode or not self.publish_visualization or not hasattr(self, 'trajectory_points'):
+        """Publish visualization markers for trajectory corridor and velocity"""
+        if not self.publish_visualization or not hasattr(self, 'trajectory_points'):
             return
 
         if not self.path_ready or len(self.trajectory_points) == 0:
@@ -798,6 +827,9 @@ class HorizonMapperNode(Node):
 
     def _publish_corridor_visualization(self):
         """Publish corridor visualization with bounds and LIDAR risk coloring"""
+        if not self.path_ready or len(self.trajectory_points) == 0:
+            return
+
         marker_array = MarkerArray()
 
         # Risk thresholds (meters)
@@ -806,6 +838,13 @@ class HorizonMapperNode(Node):
 
         # Find current trajectory segment
         start_index = self._find_closest_point_index()
+
+        # Helper to get values from point
+        def get_value(point, key):
+            if isinstance(point, dict):
+                return point[key]
+            else:
+                return getattr(point, key)
 
         # Helper to get LIDAR risk at a point
         def get_lidar_risk(x, y):
@@ -838,16 +877,21 @@ class HorizonMapperNode(Node):
             point_index = start_index + i
             traj_point = self.trajectory_points[point_index]
 
+            # Get values from point
+            px = get_value(traj_point, 'x')
+            py = get_value(traj_point, 'y')
+            pv = get_value(traj_point, 'v')
+
             # Compute bounds
             left_bound, right_bound, confidence = self._compute_adaptive_bounds(
-                point_index, traj_point['v'])
+                point_index, pv)
 
             # Compute normal vector
             normal_x, normal_y = self._compute_path_normal(point_index)
 
             # Left boundary marker
-            left_x = traj_point['x'] + normal_x * left_bound
-            left_y = traj_point['y'] + normal_y * left_bound
+            left_x = px + normal_x * left_bound
+            left_y = py + normal_y * left_bound
             left_marker = Marker()
             left_marker.header.stamp = self.get_clock().now().to_msg()
             left_marker.header.frame_id = self.map_frame
@@ -883,8 +927,8 @@ class HorizonMapperNode(Node):
             marker_array.markers.append(left_marker)
 
             # Right boundary marker
-            right_x = traj_point['x'] - normal_x * right_bound
-            right_y = traj_point['y'] - normal_y * right_bound
+            right_x = px - normal_x * right_bound
+            right_y = py - normal_y * right_bound
             right_marker = Marker()
             right_marker.header.stamp = self.get_clock().now().to_msg()
             right_marker.header.frame_id = self.map_frame
@@ -926,8 +970,8 @@ class HorizonMapperNode(Node):
             center_marker.type = Marker.SPHERE
             center_marker.action = Marker.ADD
 
-            center_marker.pose.position.x = traj_point['x']
-            center_marker.pose.position.y = traj_point['y']
+            center_marker.pose.position.x = px
+            center_marker.pose.position.y = py
             center_marker.pose.position.z = 0.0
 
             center_marker.scale.x = 0.05
@@ -966,7 +1010,17 @@ class HorizonMapperNode(Node):
 
     def _publish_velocity_visualization(self):
         """Publish improved velocity visualization with elevation and heatmap"""
+        if not self.path_ready or len(self.trajectory_points) == 0:
+            return
+
         marker_array = MarkerArray()
+
+        # Helper to get values from point
+        def get_value(point, key):
+            if isinstance(point, dict):
+                return point[key]
+            else:
+                return getattr(point, key)
 
         # Method 1: Create velocity heatmap using colored cylinders on the ground
         for i, point in enumerate(self.trajectory_points[::3]):  # Sample every 3rd point for density
@@ -979,13 +1033,13 @@ class HorizonMapperNode(Node):
             cylinder_marker.action = Marker.ADD
 
             # Position on the ground
-            cylinder_marker.pose.position.x = point['x']
-            cylinder_marker.pose.position.y = point['y']
+            cylinder_marker.pose.position.x = get_value(point, 'x')
+            cylinder_marker.pose.position.y = get_value(point, 'y')
             cylinder_marker.pose.position.z = 0.01  # Slightly above ground
 
             # Scale based on velocity - wider cylinders for higher speeds
             base_radius = 0.15
-            velocity_scale = min(point['v'] / self.velocity_color_scale, 1.0)
+            velocity_scale = min(get_value(point, 'v') / self.velocity_color_scale, 1.0)
             radius = base_radius + (velocity_scale * 0.1)
 
             cylinder_marker.scale.x = radius * 2  # Diameter
@@ -993,7 +1047,7 @@ class HorizonMapperNode(Node):
             cylinder_marker.scale.z = 0.02  # Thin disk
 
             # Color based on velocity
-            cylinder_marker.color = self._velocity_to_color(point['v'])
+            cylinder_marker.color = self._velocity_to_color(get_value(point, 'v'))
             cylinder_marker.color.a = 0.7  # Semi-transparent
 
             marker_array.markers.append(cylinder_marker)
@@ -1023,8 +1077,8 @@ class HorizonMapperNode(Node):
             p2 = self.trajectory_points[i + 1]
 
             # Calculate normal vector for width
-            dx = p2['x'] - p1['x']
-            dy = p2['y'] - p1['y']
+            dx = get_value(p2, 'x') - get_value(p1, 'x')
+            dy = get_value(p2, 'y') - get_value(p1, 'y')
             length = math.sqrt(dx**2 + dy**2)
             if length > 0:
                 normal_x = -dy / length * width / 2
@@ -1033,59 +1087,59 @@ class HorizonMapperNode(Node):
                 normal_x = normal_y = 0
 
             # Heights based on velocity
-            h1 = p1['v'] * height_scale
-            h2 = p2['v'] * height_scale
+            h1 = get_value(p1, 'v') * height_scale
+            h2 = get_value(p2, 'v') * height_scale
 
             # Create two triangles for this segment
             # Triangle 1
             # Bottom left
             pt1 = Point()
-            pt1.x = p1['x'] - normal_x
-            pt1.y = p1['y'] - normal_y
+            pt1.x = get_value(p1, 'x') - normal_x
+            pt1.y = get_value(p1, 'y') - normal_y
             pt1.z = 0.0
             elevation_marker.points.append(pt1)
-            elevation_marker.colors.append(self._velocity_to_color(p1['v']))
+            elevation_marker.colors.append(self._velocity_to_color(get_value(p1, 'v')))
 
             # Top left
             pt2 = Point()
-            pt2.x = p1['x'] - normal_x
-            pt2.y = p1['y'] - normal_y
+            pt2.x = get_value(p1, 'x') - normal_x
+            pt2.y = get_value(p1, 'y') - normal_y
             pt2.z = h1
             elevation_marker.points.append(pt2)
-            elevation_marker.colors.append(self._velocity_to_color(p1['v']))
+            elevation_marker.colors.append(self._velocity_to_color(get_value(p1, 'v')))
 
             # Bottom right
             pt3 = Point()
-            pt3.x = p2['x'] - normal_x
-            pt3.y = p2['y'] - normal_y
+            pt3.x = get_value(p2, 'x') - normal_x
+            pt3.y = get_value(p2, 'y') - normal_y
             pt3.z = 0.0
             elevation_marker.points.append(pt3)
-            elevation_marker.colors.append(self._velocity_to_color(p2['v']))
+            elevation_marker.colors.append(self._velocity_to_color(get_value(p2, 'v')))
 
             # Triangle 2
             # Top left
             pt4 = Point()
-            pt4.x = p1['x'] - normal_x
-            pt4.y = p1['y'] - normal_y
+            pt4.x = get_value(p1, 'x') - normal_x
+            pt4.y = get_value(p1, 'y') - normal_y
             pt4.z = h1
             elevation_marker.points.append(pt4)
-            elevation_marker.colors.append(self._velocity_to_color(p1['v']))
+            elevation_marker.colors.append(self._velocity_to_color(get_value(p1, 'v')))
 
             # Top right
             pt5 = Point()
-            pt5.x = p2['x'] - normal_x
-            pt5.y = p2['y'] - normal_y
+            pt5.x = get_value(p2, 'x') - normal_x
+            pt5.y = get_value(p2, 'y') - normal_y
             pt5.z = h2
             elevation_marker.points.append(pt5)
-            elevation_marker.colors.append(self._velocity_to_color(p2['v']))
+            elevation_marker.colors.append(self._velocity_to_color(get_value(p2, 'v')))
 
             # Bottom right
             pt6 = Point()
-            pt6.x = p2['x'] - normal_x
-            pt6.y = p2['y'] - normal_y
+            pt6.x = get_value(p2, 'x') - normal_x
+            pt6.y = get_value(p2, 'y') - normal_y
             pt6.z = 0.0
             elevation_marker.points.append(pt6)
-            elevation_marker.colors.append(self._velocity_to_color(p2['v']))
+            elevation_marker.colors.append(self._velocity_to_color(get_value(p2, 'v')))
 
         marker_array.markers.append(elevation_marker)
 
@@ -1100,26 +1154,26 @@ class HorizonMapperNode(Node):
             arrow_marker.action = Marker.ADD
 
             # Position
-            arrow_marker.pose.position.x = point['x']
-            arrow_marker.pose.position.y = point['y']
+            arrow_marker.pose.position.x = get_value(point, 'x')
+            arrow_marker.pose.position.y = get_value(point, 'y')
             arrow_marker.pose.position.z = 0.1
 
             # Orientation based on heading
-            quat = quaternion_from_euler(0, 0, point['theta'])
+            quat = quaternion_from_euler(0, 0, get_value(point, 'theta'))
             arrow_marker.pose.orientation.x = quat[0]
             arrow_marker.pose.orientation.y = quat[1]
             arrow_marker.pose.orientation.z = quat[2]
             arrow_marker.pose.orientation.w = quat[3]
 
             # Scale based on velocity
-            velocity_scale = min(point['v'] / self.velocity_color_scale, 1.0)
+            velocity_scale = min(get_value(point, 'v') / self.velocity_color_scale, 1.0)
             arrow_length = 0.2 + (velocity_scale * 0.3)
             arrow_marker.scale.x = arrow_length  # Length
             arrow_marker.scale.y = 0.05  # Width
             arrow_marker.scale.z = 0.05  # Height
 
             # Color based on velocity
-            arrow_marker.color = self._velocity_to_color(point['v'])
+            arrow_marker.color = self._velocity_to_color(get_value(point, 'v'))
             arrow_marker.color.a = 0.8
 
             marker_array.markers.append(arrow_marker)
@@ -1128,16 +1182,16 @@ class HorizonMapperNode(Node):
 
     def publish_predictive_trajectory(self):
         """Unified trajectory publishing method"""
-        # Always publish legacy trajectory for backward compatibility
-        self._publish_legacy_trajectory()
+        # Publish basic trajectory for controller
+        self._publish_basic_trajectory()
 
-        # Publish enhanced trajectory if in enhanced mode
-        if self.enhanced_mode:
-            self._publish_enhanced_trajectory()
+        # Publish constrained trajectory with visualization
+        if self.publish_visualization:
+            self._publish_constrained_trajectory()
 
-    def _publish_legacy_trajectory(self):
-        """Publish legacy trajectory (original horizon mapper behavior)"""
-        # Always publish status
+    def _publish_basic_trajectory(self):
+        """Publish basic trajectory for model-based controller"""
+        # Publish status
         status_msg = Bool()
         status_msg.data = self.path_ready
         self.status_pub.publish(status_msg)
