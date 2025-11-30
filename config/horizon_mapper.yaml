@@ -1,5 +1,4 @@
 # Horizon Mapper Configuration
-# Trajectory processing and publishing parameters for F1TENTH MPC controller
 
 horizon_mapper_node:
   ros__parameters:
