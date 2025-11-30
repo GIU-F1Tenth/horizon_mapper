@@ -20,6 +20,8 @@ horizon_mapper_node:
     scan_topic: "/scan"
     initialpose_topic: "/initialpose"
     path_topic: "/path"
+    left_boundary_topic: "/left_boundary"
+    right_boundary_topic: "/right_boundary"
     horizon_topic: "ctrl/dynamic/horizon_n"
     bound_adjustment_topic: "/ctrl/bound_adjustments" 
 
@@ -40,7 +42,7 @@ horizon_mapper_node:
     adaptive_bounds: true   
 
     # Visualization
-    publish_visualization: true
+    publish_visualization: false
     corridor_viz_topic: "/horizon_mapper/corridor_visualization"
     velocity_viz_topic: "/horizon_mapper/velocity_path" 
     velocity_color_scale: 10.0 

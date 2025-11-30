@@ -120,6 +120,10 @@ class HorizonMapperNode(Node):
         self.declare_parameter('enable_debugging', default_config.enable_debugging)
         self.declare_parameter('path_topic', default_config.path_topic,
                                ParameterDescriptor(description='Topic to subscribe for input trajectory path'))
+        self.declare_parameter('left_boundary_topic', '/left_boundary',
+                               ParameterDescriptor(description='Topic for left boundary path'))
+        self.declare_parameter('right_boundary_topic', '/right_boundary',
+                               ParameterDescriptor(description='Topic for right boundary path'))
         self.declare_parameter('horizon_N', default_config.horizon_N)
         self.declare_parameter('horizon_T', 0.5)
         self.declare_parameter('wheelbase', default_config.wheelbase)
@@ -175,6 +179,8 @@ class HorizonMapperNode(Node):
         self.enable_logging = self.get_parameter('enable_logging').value
         self.enable_debugging = self.get_parameter('enable_debugging').value
         self.path_topic = self.get_parameter('path_topic').value
+        self.left_boundary_topic = self.get_parameter('left_boundary_topic').value
+        self.right_boundary_topic = self.get_parameter('right_boundary_topic').value
         self.horizon = self.get_parameter('horizon_N').value
         self.horizon_T = self.get_parameter('horizon_T').value
         self.wheelbase = self.get_parameter('wheelbase').value
@@ -218,6 +224,11 @@ class HorizonMapperNode(Node):
         self.current_vehicle_state.delta = 0.0
         self.current_pose_estimate = None
         self.trajectory_index = 0
+        
+        # Boundary arrays from external source
+        self.received_left_bounds = []
+        self.received_right_bounds = []
+        self.use_received_bounds = False
 
         # Visualization and constraint state variables
         if self.publish_visualization:
@@ -255,13 +266,23 @@ class HorizonMapperNode(Node):
         
         self.path_sub = self.create_subscription(
             Path, self.path_topic, self._path_callback, self.qos_depth)
+        
+        self.left_boundary_sub = self.create_subscription(
+            Path, self.left_boundary_topic, self._left_boundary_callback, self.qos_depth)
+        
+        self.right_boundary_sub = self.create_subscription(
+            Path, self.right_boundary_topic, self._right_boundary_callback, self.qos_depth)
 
         # Adaptive bounds subscriber
         if self.publish_visualization and self.adaptive_bounds:
             self.bound_adjustment_sub = self.create_subscription(
                 BoundAdjustment, self.bound_adjustment_topic, self._bound_adjustment_callback, self.qos_depth)
         
-        self.get_logger().info(f"Subscribed to topics: path={self.path_topic}, odom={self.odom_topic}")
+        self.get_logger().info(f"Subscribed to topics:")
+        self.get_logger().info(f"  - Reference path: {self.path_topic}")
+        self.get_logger().info(f"  - Left boundary: {self.left_boundary_topic}")
+        self.get_logger().info(f"  - Right boundary: {self.right_boundary_topic}")
+        self.get_logger().info(f"  - Odometry: {self.odom_topic}")
 
     def _lidar_callback(self, msg):
         """Store latest LIDAR scan"""
@@ -310,6 +331,9 @@ class HorizonMapperNode(Node):
             # Update reference trajectory
             self.reference_trajectory = new_trajectory
             
+            # Check if we have matching boundaries
+            self._validate_boundaries()
+            
             # Update trajectory points for visualization
             if self.publish_visualization:
                 self.trajectory_points = []
@@ -323,10 +347,118 @@ class HorizonMapperNode(Node):
                     self.trajectory_points.append(point)
             
             self.path_ready = True
-            self.get_logger().info(f"Updated reference trajectory with {len(self.reference_trajectory)} points")
+            boundary_status = 'received' if self.use_received_bounds else 'adaptive'
+            self.get_logger().info(f"Updated reference trajectory: {len(self.reference_trajectory)} points, "
+                                  f"boundaries: {boundary_status}")
             
         except Exception as e:
             self.get_logger().error(f"Error processing path message: {e}")
+    
+    def _left_boundary_callback(self, msg: Path):
+        """Callback for left boundary path"""
+        try:
+            if len(msg.poses) == 0:
+                self.get_logger().warn("Received empty left boundary path")
+                return
+            
+            # Extract lateral distances from boundary path
+            self.received_left_bounds = []
+            
+            if not self.reference_trajectory:
+                # If no reference trajectory yet, store raw distances
+                for pose_stamped in msg.poses:
+                    # Calculate distance from origin or use provided value
+                    x = pose_stamped.pose.position.x
+                    y = pose_stamped.pose.position.y
+                    distance = math.sqrt(x**2 + y**2)
+                    self.received_left_bounds.append(distance)
+            else:
+                # Calculate perpendicular distance from reference trajectory
+                for i, pose_stamped in enumerate(msg.poses):
+                    if i < len(self.reference_trajectory):
+                        # Get boundary point
+                        bound_x = pose_stamped.pose.position.x
+                        bound_y = pose_stamped.pose.position.y
+                        
+                        # Get corresponding reference point
+                        ref_x = self.reference_trajectory[i].x
+                        ref_y = self.reference_trajectory[i].y
+                        
+                        # Calculate perpendicular distance
+                        distance = math.sqrt((bound_x - ref_x)**2 + (bound_y - ref_y)**2)
+                        self.received_left_bounds.append(distance)
+                    else:
+                        # Fallback for mismatched lengths
+                        self.received_left_bounds.append(self.default_left_bound)
+            
+            self.get_logger().info(f"Received left boundary: {len(self.received_left_bounds)} points")
+            self._validate_boundaries()
+            
+        except Exception as e:
+            self.get_logger().error(f"Error processing left boundary: {e}")
+    
+    def _right_boundary_callback(self, msg: Path):
+        """Callback for right boundary path"""
+        try:
+            if len(msg.poses) == 0:
+                self.get_logger().warn("Received empty right boundary path")
+                return
+            
+            # Extract lateral distances from boundary path
+            self.received_right_bounds = []
+            
+            if not self.reference_trajectory:
+                # If no reference trajectory yet, store raw distances
+                for pose_stamped in msg.poses:
+                    # Calculate distance from origin or use provided value
+                    x = pose_stamped.pose.position.x
+                    y = pose_stamped.pose.position.y
+                    distance = math.sqrt(x**2 + y**2)
+                    self.received_right_bounds.append(distance)
+            else:
+                # Calculate perpendicular distance from reference trajectory
+                for i, pose_stamped in enumerate(msg.poses):
+                    if i < len(self.reference_trajectory):
+                        # Get boundary point
+                        bound_x = pose_stamped.pose.position.x
+                        bound_y = pose_stamped.pose.position.y
+                        
+                        # Get corresponding reference point
+                        ref_x = self.reference_trajectory[i].x
+                        ref_y = self.reference_trajectory[i].y
+                        
+                        # Calculate perpendicular distance
+                        distance = math.sqrt((bound_x - ref_x)**2 + (bound_y - ref_y)**2)
+                        self.received_right_bounds.append(distance)
+                    else:
+                        # Fallback for mismatched lengths
+                        self.received_right_bounds.append(self.default_right_bound)
+            
+            self.get_logger().info(f"Received right boundary: {len(self.received_right_bounds)} points")
+            self._validate_boundaries()
+            
+        except Exception as e:
+            self.get_logger().error(f"Error processing right boundary: {e}")
+    
+    def _validate_boundaries(self):
+        """Validate that trajectory and boundaries have matching lengths"""
+        if not self.reference_trajectory:
+            self.use_received_bounds = False
+            return
+        
+        traj_len = len(self.reference_trajectory)
+        left_len = len(self.received_left_bounds)
+        right_len = len(self.received_right_bounds)
+        
+        if left_len == traj_len and right_len == traj_len:
+            self.use_received_bounds = True
+            self.get_logger().info(f"Boundaries validated: {traj_len} points match")
+        elif left_len > 0 or right_len > 0:
+            self.use_received_bounds = False
+            self.get_logger().warn(f"Boundary length mismatch - trajectory: {traj_len}, "
+                                  f"left: {left_len}, right: {right_len}. Using adaptive bounds.")
+        else:
+            self.use_received_bounds = False
 
     def _create_publishers(self):
         """Create ROS2 publishers"""
@@ -774,9 +906,15 @@ class HorizonMapperNode(Node):
             state.theta = get_value(traj_point, 'theta')
             state.v_ref = max(get_value(traj_point, 'v'), self.min_speed)
 
-            # Compute adaptive bounds
-            left_bound, right_bound, confidence = self._compute_adaptive_bounds(
-                point_index, state.v_ref)
+            # Use received boundaries if available, otherwise compute adaptive bounds
+            if self.use_received_bounds and point_index < len(self.received_left_bounds):
+                left_bound = self.received_left_bounds[point_index]
+                right_bound = self.received_right_bounds[point_index]
+                confidence = self.default_confidence  # Use default confidence for received bounds
+            else:
+                # Compute adaptive bounds
+                left_bound, right_bound, confidence = self._compute_adaptive_bounds(
+                    point_index, state.v_ref)
 
             state.left_bound = left_bound
             state.right_bound = right_bound
