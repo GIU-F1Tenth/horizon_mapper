@@ -43,11 +43,6 @@ from giu_f1t_interfaces.msg import (
     BoundAdjustment,
     ConstraintStatus,
 )
-try:
-    from .preprocess_trajectory import preprocess_trajectory
-except ImportError:
-    def preprocess_trajectory(*args, **kwargs):
-        return []
 import rclpy
 from rclpy.node import Node
 from rclpy.parameter import Parameter
@@ -66,32 +61,13 @@ from ament_index_python.packages import get_package_share_directory
 
 class DefaultConfig:
     def __init__(self):
-        pkg_share = get_package_share_directory('horizon_mapper')
-        # Check multiple possible install locations
-        install_data_optimal = os.path.join(pkg_share, 'data', 'optimal_trajectory.csv')
-        install_data_reference = os.path.join(pkg_share, 'data', 'ref_trajectory.csv')
-        install_optimal = os.path.join(pkg_share, 'optimal_trajectory.csv')
-        install_reference = os.path.join(pkg_share, 'ref_trajectory.csv')
-        src_optimal = os.path.join(os.path.dirname(__file__), 'optimal_trajectory.csv')
-        src_reference = os.path.join(os.path.dirname(__file__), 'ref_trajectory.csv')
-
-        # Prefer install space (data directory), then install space root, then source space
-        if os.path.exists(install_data_optimal) and os.path.exists(install_data_reference):
-            self.optimal_trajectory_path = install_data_optimal
-            self.reference_trajectory_path = install_data_reference
-        elif os.path.exists(install_optimal) and os.path.exists(install_reference):
-            self.optimal_trajectory_path = install_optimal
-            self.reference_trajectory_path = install_reference
-        else:
-            self.optimal_trajectory_path = src_optimal
-            self.reference_trajectory_path = src_reference
-
         self.enable_trajectory_generation = True
         self.horizon_N = 8
         self.wheelbase = 0.33
         self.max_steering_angle = 0.5
         self.min_speed = 0.1
         self.odom_topic = "car_state/odom"
+        self.path_topic = "/path"
         self.enable_logging = True
         self.enable_debugging = False
 
@@ -139,10 +115,7 @@ class HorizonMapperNode(Node):
         # Service: allow external controller to request trajectory reload/resample
         self.override_service = self.create_service(Trigger, '/horizon_mapper/override_path', self._override_service_cb)
 
-        # Run preprocessing on startup
-        self.preprocess_and_load_trajectory()
-
-        self.get_logger().info("Horizon Mapper Node initialized")
+        self.get_logger().info("Horizon Mapper Node initialized - waiting for /path topic")
 
     def _declare_parameters(self):
         """Declare all ROS2 parameters with descriptions"""
@@ -153,14 +126,38 @@ class HorizonMapperNode(Node):
         # Legacy parameters
         self.declare_parameter('enable_logging', default_config.enable_logging)
         self.declare_parameter('enable_debugging', default_config.enable_debugging)
-        self.declare_parameter('optimal_trajectory_path', default_config.optimal_trajectory_path)
-        self.declare_parameter('reference_trajectory_path', default_config.reference_trajectory_path)
+        self.declare_parameter('path_topic', default_config.path_topic,
+                               ParameterDescriptor(description='Topic to subscribe for input trajectory path'))
         self.declare_parameter('horizon_N', default_config.horizon_N)
         self.declare_parameter('horizon_T', 0.5)
         self.declare_parameter('wheelbase', default_config.wheelbase)
         self.declare_parameter('max_steering_angle', default_config.max_steering_angle)
         self.declare_parameter('min_speed', default_config.min_speed)
         self.declare_parameter('odom_topic', default_config.odom_topic)
+
+        # Topic parameters
+        self.declare_parameter('reference_path_topic', '/horizon_mapper/reference_path',
+                               ParameterDescriptor(description='Topic for publishing reference path'))
+        self.declare_parameter('reference_trajectory_topic', '/horizon_mapper/reference_trajectory',
+                               ParameterDescriptor(description='Topic for publishing reference trajectory'))
+        self.declare_parameter('status_topic', '/horizon_mapper/path_ready',
+                               ParameterDescriptor(description='Topic for publishing path ready status'))
+        self.declare_parameter('constrained_trajectory_topic', '/horizon_mapper/constrained_trajectory',
+                               ParameterDescriptor(description='Topic for publishing constrained trajectory'))
+        self.declare_parameter('constraint_status_topic', '/horizon_mapper/constraint_status',
+                               ParameterDescriptor(description='Topic for publishing constraint status'))
+        self.declare_parameter('corridor_viz_topic', '/horizon_mapper/corridor_visualization',
+                               ParameterDescriptor(description='Topic for corridor visualization'))
+        self.declare_parameter('velocity_viz_topic', '/horizon_mapper/velocity_path',
+                               ParameterDescriptor(description='Topic for velocity visualization'))
+        self.declare_parameter('bound_adjustment_topic', '/ctrl/bound_adjustments',
+                               ParameterDescriptor(description='Topic for receiving bound adjustments'))
+        self.declare_parameter('scan_topic', '/scan',
+                               ParameterDescriptor(description='Topic for LIDAR scan data'))
+        self.declare_parameter('initialpose_topic', '/initialpose',
+                               ParameterDescriptor(description='Topic for initial pose estimates'))
+        self.declare_parameter('horizon_topic', 'ctrl/dynamic/horizon_n',
+                               ParameterDescriptor(description='Topic for dynamic horizon updates'))
 
         # Enhanced parameters
         self.declare_parameter('default_left_bound', 1.0,
@@ -177,6 +174,8 @@ class HorizonMapperNode(Node):
                                ParameterDescriptor(description='Maximum velocity for color scale [m/s]'))
         self.declare_parameter('map_frame', 'map',
                                ParameterDescriptor(description='Map frame ID'))
+        self.declare_parameter('qos_depth', 10,
+                               ParameterDescriptor(description='QoS queue depth for topics'))
 
     def _load_parameters(self):
         """Load parameters from parameter server"""
@@ -185,14 +184,26 @@ class HorizonMapperNode(Node):
         # Legacy parameters
         self.enable_logging = self.get_parameter('enable_logging').value
         self.enable_debugging = self.get_parameter('enable_debugging').value
-        self.input_path = self.get_parameter('optimal_trajectory_path').value
-        self.output_path = self.get_parameter('reference_trajectory_path').value
+        self.path_topic = self.get_parameter('path_topic').value
         self.horizon = self.get_parameter('horizon_N').value
         self.horizon_T = self.get_parameter('horizon_T').value
         self.wheelbase = self.get_parameter('wheelbase').value
         self.max_steering = self.get_parameter('max_steering_angle').value
         self.min_speed = self.get_parameter('min_speed').value
         self.odom_topic = self.get_parameter('odom_topic').value
+
+        # Topic parameters
+        self.reference_path_topic = self.get_parameter('reference_path_topic').value
+        self.reference_trajectory_topic = self.get_parameter('reference_trajectory_topic').value
+        self.status_topic = self.get_parameter('status_topic').value
+        self.constrained_trajectory_topic = self.get_parameter('constrained_trajectory_topic').value
+        self.constraint_status_topic = self.get_parameter('constraint_status_topic').value
+        self.corridor_viz_topic = self.get_parameter('corridor_viz_topic').value
+        self.velocity_viz_topic = self.get_parameter('velocity_viz_topic').value
+        self.bound_adjustment_topic = self.get_parameter('bound_adjustment_topic').value
+        self.scan_topic = self.get_parameter('scan_topic').value
+        self.initialpose_topic = self.get_parameter('initialpose_topic').value
+        self.horizon_topic = self.get_parameter('horizon_topic').value
 
         # Enhanced parameters
         self.default_left_bound = self.get_parameter('default_left_bound').value
@@ -202,6 +213,7 @@ class HorizonMapperNode(Node):
         self.publish_visualization = self.get_parameter('publish_visualization').value
         self.velocity_color_scale = self.get_parameter('velocity_color_scale').value
         self.map_frame = self.get_parameter('map_frame').value
+        self.qos_depth = self.get_parameter('qos_depth').value
 
     def _initialize_state_variables(self):
         """Initialize state variables"""
@@ -235,55 +247,108 @@ class HorizonMapperNode(Node):
 
     def _create_subscribers(self):
         """Create ROS2 subscribers"""
-        # Legacy subscribers
+        from sensor_msgs.msg import LaserScan
+        
+        # Core subscribers
         self.odom_sub = self.create_subscription(
-            Odometry, self.odom_topic, self.odometry_callback, 10)
+            Odometry, self.odom_topic, self.odometry_callback, self.qos_depth)
 
         self.pose_sub = self.create_subscription(
-            PoseWithCovarianceStamped, '/initialpose', self.pose_estimate_callback, 10)
+            PoseWithCovarianceStamped, self.initialpose_topic, self.pose_estimate_callback, self.qos_depth)
+
+        self.lidar_scan = None
+        self.lidar_scan_sub = self.create_subscription(
+            LaserScan, self.scan_topic, self._lidar_callback, self.qos_depth)
+        
+        self.horizon_sub = self.create_subscription(
+            Int16, self.horizon_topic, self.horizon_callback, self.qos_depth)
+        
+        self.path_sub = self.create_subscription(
+            Path, self.path_topic, self._path_callback, self.qos_depth)
 
         # Enhanced subscribers
         if self.enhanced_mode and self.adaptive_bounds:
             self.bound_adjustment_sub = self.create_subscription(
-                BoundAdjustment, '/mpc/bound_adjustments', self._bound_adjustment_callback, 10)
-
-        # LIDAR subscriber for /scan
-        from sensor_msgs.msg import LaserScan
-        self.lidar_scan = None
-        self.lidar_scan_sub = self.create_subscription(
-            LaserScan, '/scan', self._lidar_callback, 10)
+                BoundAdjustment, self.bound_adjustment_topic, self._bound_adjustment_callback, self.qos_depth)
         
-        # Horizon subscriber for dynamically 
-        self.horizon_sub = self.create_subscription(
-            Int16,
-            "control/dynamic/horizon_n",
-            self.horizon_callback,
-            10
-        )
+        self.get_logger().info(f"Subscribed to topics: path={self.path_topic}, odom={self.odom_topic}")
 
     def _lidar_callback(self, msg):
         """Store latest LIDAR scan"""
         self.lidar_scan = msg
+    
+    def _path_callback(self, msg: Path):
+        """Callback to process incoming Path message and convert to reference trajectory"""
+        try:
+            if len(msg.poses) == 0:
+                self.get_logger().warn("Received empty path message")
+                return
+            
+            self.get_logger().info(f"Received path with {len(msg.poses)} poses")
+            
+            # Convert Path message to reference trajectory format
+            new_trajectory = []
+            for i, pose_stamped in enumerate(msg.poses):
+                state = VehicleState()
+                state.x = pose_stamped.pose.position.x
+                state.y = pose_stamped.pose.position.y
+                
+                # Extract theta from quaternion
+                orientation = pose_stamped.pose.orientation
+                _, _, yaw = euler_from_quaternion([
+                    orientation.x,
+                    orientation.y,
+                    orientation.z,
+                    orientation.w
+                ])
+                state.theta = yaw
+                
+                # Calculate velocity from spacing (simple approximation)
+                if i > 0:
+                    prev_state = new_trajectory[-1]
+                    dx = state.x - prev_state.x
+                    dy = state.y - prev_state.y
+                    distance = math.sqrt(dx**2 + dy**2)
+                    # Assume constant time step or use min_speed as default
+                    state.v = max(distance / self.horizon_T, self.min_speed)
+                else:
+                    state.v = self.min_speed
+                
+                state.delta = 0.0  # Steering will be computed by MPC
+                new_trajectory.append(state)
+            
+            # Update reference trajectory
+            self.reference_trajectory = new_trajectory
+            
+            # Also update trajectory_points for enhanced mode
+            if self.enhanced_mode:
+                self.trajectory_points = new_trajectory
+            
+            self.path_ready = True
+            self.get_logger().info(f"Updated reference trajectory with {len(self.reference_trajectory)} points")
+            
+        except Exception as e:
+            self.get_logger().error(f"Error processing path message: {e}")
 
     def _create_publishers(self):
         """Create ROS2 publishers"""
-        # Legacy publishers (always available)
-        self.path_pub = self.create_publisher(Path, '/horizon_mapper/reference_path', 10)
-        self.trajectory_pub = self.create_publisher(VehicleStateArray, '/horizon_mapper/reference_trajectory', 10)
-        self.status_pub = self.create_publisher(Bool, '/horizon_mapper/path_ready', 10)
+        # Core publishers (always available)
+        self.path_pub = self.create_publisher(Path, self.reference_path_topic, self.qos_depth)
+        self.trajectory_pub = self.create_publisher(VehicleStateArray, self.reference_trajectory_topic, self.qos_depth)
+        self.status_pub = self.create_publisher(Bool, self.status_topic, self.qos_depth)
 
         # Enhanced publishers
         if self.enhanced_mode:
             self.constrained_trajectory_pub = self.create_publisher(
-                ConstrainedVehicleStateArray, '/horizon_mapper/constrained_trajectory', 10)
+                ConstrainedVehicleStateArray, self.constrained_trajectory_topic, self.qos_depth)
             self.constraint_status_pub = self.create_publisher(
-                ConstraintStatus, '/horizon_mapper/constraint_status', 10)
+                ConstraintStatus, self.constraint_status_topic, self.qos_depth)
 
             if self.publish_visualization:
                 self.corridor_viz_pub = self.create_publisher(
-                    MarkerArray, '/horizon_mapper/corridor_visualization', 10)
+                    MarkerArray, self.corridor_viz_topic, self.qos_depth)
                 self.velocity_path_pub = self.create_publisher(
-                    MarkerArray, '/horizon_mapper/velocity_path', 10)
+                    MarkerArray, self.velocity_viz_topic, self.qos_depth)
 
     def _create_timers(self):
         """Create ROS2 timers"""
@@ -293,81 +358,6 @@ class HorizonMapperNode(Node):
         # Enhanced visualization timer
         if self.enhanced_mode and self.publish_visualization:
             self.viz_timer = self.create_timer(0.2, self._publish_visualization)  # 5 Hz
-        self.enable_debugging = self.get_parameter('enable_debugging').value
-        self.input_path = self.get_parameter('optimal_trajectory_path').value
-        self.output_path = self.get_parameter('reference_trajectory_path').value
-        self.horizon = self.get_parameter('horizon_N').value
-        self.horizon_T = self.get_parameter('horizon_T').value
-        self.wheelbase = self.get_parameter('wheelbase').value
-        self.max_steering = self.get_parameter('max_steering_angle').value
-        self.min_speed = self.get_parameter('min_speed').value
-        self.odom_topic = self.get_parameter('odom_topic').value
-
-        if self.enable_logging:
-            self.get_logger().info("Detailed logging enabled")
-        else:
-            self.get_logger().info("Detailed logging disabled - only warnings and errors will be shown")
-
-        if not self.input_path or not self.output_path:
-            self.get_logger().error("Missing trajectory paths in parameters!")
-            return
-
-        self.get_logger().info(f"Input trajectory: {self.input_path}")
-        self.get_logger().info(f"Output trajectory: {self.output_path}")
-        self.get_logger().info(f"Horizon: {self.horizon} steps")
-
-        # State variables
-        self.reference_trajectory = []
-        self.path_ready = False
-        self.current_vehicle_state = VehicleState()
-        # Initialize vehicle state with safe default values
-        self.current_vehicle_state.x = 0.0
-        self.current_vehicle_state.y = 0.0
-        self.current_vehicle_state.v = 0.0
-        self.current_vehicle_state.theta = 0.0  # Initialize heading
-        self.current_vehicle_state.delta = 0.0
-        self.current_pose_estimate = None
-        self.trajectory_index = 0
-
-        # Debug: Log initial vehicle state
-        self.get_logger().info(f"Initialized vehicle state: "
-                               f"x={self.current_vehicle_state.x}, y={self.current_vehicle_state.y}, "
-                               f"v={self.current_vehicle_state.v}, theta={self.current_vehicle_state.theta}")
-
-        # Subscribers
-        self.odom_sub = self.create_subscription(
-            Odometry,
-            self.odom_topic,
-            self.odometry_callback,
-            10)
-
-        self.get_logger().info(f"Subscribing to odometry topic: {self.odom_topic}")
-
-        # Subscribe to RViz 2D Pose Estimate
-        self.pose_sub = self.create_subscription(
-            PoseWithCovarianceStamped,
-            '/initialpose',
-            self.pose_estimate_callback,
-            10)
-
-        # Publishers
-        self.path_pub = self.create_publisher(
-            Path,
-            '/horizon_mapper/reference_path',
-            10)
-
-        self.trajectory_pub = self.create_publisher(
-            VehicleStateArray,
-            '/horizon_mapper/reference_trajectory',
-            10)
-
-        self.status_pub = self.create_publisher(
-            Bool,
-            '/horizon_mapper/path_ready',
-            10)
-
-        # Timers
-        self.publish_timer = self.create_timer(0.1, self.publish_predictive_trajectory)  # 10 Hz for MPC
 
     def log_info(self, message):
         """Log info messages only if logging is enabled"""
@@ -453,115 +443,21 @@ class HorizonMapperNode(Node):
         except Exception as e:
             self.get_logger().error(f"Error processing pose estimate: {str(e)}")
 
-    def preprocess_and_load_trajectory(self):
-        """Run preprocessing script and load trajectory"""
-        try:
-            self.log_info("Starting trajectory preprocessing...")
-
-            # Run the preprocessing script with parameters
-            success = preprocess_trajectory(
-                self.input_path,
-                self.output_path,
-                wheelbase=self.wheelbase,
-                max_steering=self.max_steering,
-                min_velocity=self.min_speed
-            )
-
-            if success:
-                self.log_info("Preprocessing completed successfully")
-                self.reference_trajectory = self.load_trajectory_from_csv(self.output_path)
-                self.path_ready = True
-                self.log_info(f"Reference trajectory loaded: {len(self.reference_trajectory)} points")
-            else:
-                self.get_logger().error("Preprocessing failed")
-                self.path_ready = False
-
-        except Exception as e:
-            self.get_logger().error(f"Error during preprocessing: {str(e)}")
-            self.path_ready = False
-
     def _override_service_cb(self, request, response):
-        """Service callback to force reloading/resampling of the reference trajectory.
+        """Service callback to reset trajectory state.
 
-        This allows the AERO controller to request an update mid-race 
+        This allows external controllers to request a trajectory reset.
         """
         try:
-            self.preprocess_and_load_trajectory()
-            response.success = bool(self.path_ready)
-            response.message = 'reference_trajectory reloaded' if self.path_ready else 'failed to reload trajectory'
+            self.trajectory_index = 0
+            self.get_logger().info("Trajectory state reset via service call")
+            response.success = True
+            response.message = "Trajectory state reset"
         except Exception as e:
+            self.get_logger().error(f"Error resetting trajectory: {e}")
             response.success = False
-            response.message = f'override failed: {e}'
+            response.message = str(e)
         return response
-
-    def load_trajectory_from_csv(self, path):
-        """Load processed trajectory from CSV file with theta support"""
-        data = []
-        try:
-            with open(path, 'r') as csvfile:
-                reader = csv.DictReader(csvfile)
-                for row in reader:
-                    state = VehicleState()
-                    state.x = float(row['x'])
-                    state.y = float(row['y'])
-                    state.v = float(row['v'])
-
-                    # Handle theta (heading angle) - this is what MPC needs
-                    if 'theta' in row:
-                        state.theta = float(row['theta'])
-                    else:
-                        # Calculate theta from the data if not provided
-                        state.theta = 0.0  # Will be calculated later
-
-                    # MPC controller computes steering angles, so set to 0.0
-                    state.delta = 0.0
-                    data.append(state)
-
-            # If theta was not provided, calculate it from consecutive points
-            if len(data) > 1 and data[0].theta == 0.0:
-                for i in range(len(data)):
-                    if i < len(data) - 1:
-                        dx = data[i + 1].x - data[i].x
-                        dy = data[i + 1].y - data[i].y
-                        data[i].theta = math.atan2(dy, dx)
-                    else:
-                        # For the last point, use the same theta as the previous point
-                        data[i].theta = data[i - 1].theta
-
-            # Validate all loaded trajectory points
-            valid_points = []
-            invalid_count = 0
-            for i, state in enumerate(data):
-                if self._validate_vehicle_state(state):
-                    valid_points.append(state)
-                else:
-                    invalid_count += 1
-                    self.get_logger().warn(f"Invalid trajectory point at index {i}: "
-                                           f"x={state.x}, y={state.y}, v={state.v}, theta={state.theta}")
-
-            if invalid_count > 0:
-                self.get_logger().warn(f"Removed {invalid_count} invalid trajectory points")
-
-            self.log_info(f"Loaded {len(valid_points)} valid trajectory points (removed {invalid_count} invalid)")
-
-            # Populate trajectory_points for enhanced mode visualization
-            if self.enhanced_mode:
-                self.trajectory_points = []
-                for state in valid_points:
-                    point = {
-                        'x': state.x,
-                        'y': state.y,
-                        'v': state.v,
-                        'theta': state.theta
-                    }
-                    self.trajectory_points.append(point)
-                self.log_info(f"Populated {len(self.trajectory_points)} trajectory points for enhanced visualization")
-
-            return valid_points
-
-        except Exception as e:
-            self.get_logger().error(f"Failed to load trajectory: {str(e)}")
-        return data
 
     def find_closest_trajectory_point(self):
         """Find the closest point on the reference trajectory to current position"""
