@@ -4,7 +4,6 @@ Horizon Mapper Launch File
 ==========================
 
 Launches the horizon_mapper_node with proper parameter configuration.
-Handles path resolution for trajectory files and configuration parameters.
 
 Author: Mohammed Azab (Mohammed@azab.io)
 """
@@ -44,6 +43,12 @@ def generate_launch_description():
         description='MPC prediction horizon steps'
     )
 
+    path_topic_arg = DeclareLaunchArgument(
+        'path_topic',
+        default_value='/path',
+        description='Topic to subscribe for trajectory path'
+    )
+
     # Package paths
     pkg_share = FindPackageShare('horizon_mapper')
 
@@ -52,19 +57,6 @@ def generate_launch_description():
         pkg_share,
         'config',
         LaunchConfiguration('config_file')
-    ])
-
-    # Trajectory file paths (resolved at launch time)
-    optimal_trajectory_path = PathJoinSubstitution([
-        pkg_share,
-        'data',
-        'optimal_trajectory.csv'
-    ])
-
-    reference_trajectory_path = PathJoinSubstitution([
-        pkg_share,
-        'data',
-        'ref_trajectory.csv'
     ])
 
     def launch_setup(context):
@@ -78,13 +70,11 @@ def generate_launch_description():
             parameters=[
                 config_file_path,
                 {
-                    # Override trajectory paths with resolved paths
-                    'optimal_trajectory_path': optimal_trajectory_path,
-                    'reference_trajectory_path': reference_trajectory_path,
                     # Override with launch arguments if provided
                     'enable_logging': LaunchConfiguration('enable_logging'),
                     'enable_debugging': LaunchConfiguration('enable_debugging'),
                     'horizon_N': LaunchConfiguration('horizon_N'),
+                    'path_topic': LaunchConfiguration('path_topic'),
                 }
             ],
             output='screen',
@@ -100,5 +90,6 @@ def generate_launch_description():
         enable_logging_arg,
         enable_debugging_arg,
         horizon_N_arg,
+        path_topic_arg,
         OpaqueFunction(function=launch_setup)
     ])
