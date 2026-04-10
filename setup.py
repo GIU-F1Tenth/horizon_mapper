@@ -28,7 +28,9 @@ setup(
     maintainer_email='mohammedazab@example.com',
     description='Horizon Mapper - Trajectory processing and publishing package for F1TENTH MPC controller',
     license='MIT',
-    tests_require=['pytest'],
+    extras_require={
+        'test': ['pytest'],
+    },
     entry_points={
         'console_scripts': [
             'horizon_mapper_node = horizon_mapper.horizon_mapper_node:main',
