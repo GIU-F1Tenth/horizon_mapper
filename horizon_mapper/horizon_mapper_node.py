@@ -43,6 +43,7 @@ from giu_f1t_interfaces.msg import (
     BoundAdjustment,
     ConstraintStatus,
 )
+from .preprocess_trajectory import preprocess_trajectory
 import rclpy
 from rclpy.node import Node
 from rclpy.parameter import Parameter
@@ -70,6 +71,9 @@ class DefaultConfig:
         self.path_topic = "/path"
         self.enable_logging = True
         self.enable_debugging = False
+        self.use_csv_path = False
+        self.csv_input_path = ""
+        self.csv_output_path = ""
 
 
 default_config = DefaultConfig()
@@ -110,7 +114,10 @@ class HorizonMapperNode(Node):
         # Service: allow external controller to request trajectory reload/resample
         self.override_service = self.create_service(Trigger, '/horizon_mapper/override_path', self._override_service_cb)
 
-        self.get_logger().info("Horizon Mapper Node initialized - waiting for /path topic")
+        if self.use_csv_path:
+            self.get_logger().info("Horizon Mapper Node initialized - path source: CSV file")
+        else:
+            self.get_logger().info(f"Horizon Mapper Node initialized - waiting for {self.path_topic} topic")
 
     def _declare_parameters(self):
         """Declare all ROS2 parameters with descriptions"""
@@ -173,6 +180,14 @@ class HorizonMapperNode(Node):
         self.declare_parameter('qos_depth', 10,
                                ParameterDescriptor(description='QoS queue depth for topics'))
 
+        # CSV path source parameters
+        self.declare_parameter('use_csv_path', default_config.use_csv_path,
+                               ParameterDescriptor(description='If true, load trajectory from CSV file instead of subscribing to path topic'))
+        self.declare_parameter('csv_input_path', default_config.csv_input_path,
+                               ParameterDescriptor(description='Path to input CSV trajectory file (used when use_csv_path=true)'))
+        self.declare_parameter('csv_output_path', default_config.csv_output_path,
+                               ParameterDescriptor(description='Path to write preprocessed CSV trajectory (used when use_csv_path=true)'))
+
     def _load_parameters(self):
         """Load parameters from parameter server"""
         # Core parameters
@@ -210,6 +225,11 @@ class HorizonMapperNode(Node):
         self.velocity_color_scale = self.get_parameter('velocity_color_scale').value
         self.map_frame = self.get_parameter('map_frame').value
         self.qos_depth = self.get_parameter('qos_depth').value
+
+        # CSV path source parameters
+        self.use_csv_path = self.get_parameter('use_csv_path').value
+        self.csv_input_path = self.get_parameter('csv_input_path').value
+        self.csv_output_path = self.get_parameter('csv_output_path').value
 
     def _initialize_state_variables(self):
         """Initialize state variables"""
@@ -264,9 +284,10 @@ class HorizonMapperNode(Node):
         self.horizon_sub = self.create_subscription(
             Int16, self.horizon_topic, self.horizon_callback, self.qos_depth)
         
-        self.path_sub = self.create_subscription(
-            Path, self.path_topic, self._path_callback, self.qos_depth)
-        
+        if not self.use_csv_path:
+            self.path_sub = self.create_subscription(
+                Path, self.path_topic, self._path_callback, self.qos_depth)
+
         self.left_boundary_sub = self.create_subscription(
             Path, self.left_boundary_topic, self._left_boundary_callback, self.qos_depth)
         
@@ -279,7 +300,10 @@ class HorizonMapperNode(Node):
                 BoundAdjustment, self.bound_adjustment_topic, self._bound_adjustment_callback, self.qos_depth)
         
         self.get_logger().info(f"Subscribed to topics:")
-        self.get_logger().info(f"  - Reference path: {self.path_topic}")
+        if not self.use_csv_path:
+            self.get_logger().info(f"  - Reference path: {self.path_topic}")
+        else:
+            self.get_logger().info(f"  - Reference path: CSV file ({self.csv_input_path})")
         self.get_logger().info(f"  - Left boundary: {self.left_boundary_topic}")
         self.get_logger().info(f"  - Right boundary: {self.right_boundary_topic}")
         self.get_logger().info(f"  - Odometry: {self.odom_topic}")
@@ -460,6 +484,74 @@ class HorizonMapperNode(Node):
         else:
             self.use_received_bounds = False
 
+    def preprocess_and_load_trajectory(self):
+        """Run preprocessing on CSV file and load trajectory (used when use_csv_path=true)"""
+        if not self.csv_input_path or not self.csv_output_path:
+            self.get_logger().error("use_csv_path is true but csv_input_path or csv_output_path is not set")
+            return
+
+        try:
+            self.log_info(f"Loading trajectory from CSV: {self.csv_input_path}")
+            success = preprocess_trajectory(
+                self.csv_input_path,
+                self.csv_output_path,
+                wheelbase=self.wheelbase,
+                max_steering=self.max_steering,
+                min_velocity=self.min_speed
+            )
+
+            if success:
+                self.reference_trajectory = self._load_trajectory_from_csv(self.csv_output_path)
+                self.path_ready = len(self.reference_trajectory) > 0
+                self.log_info(f"CSV trajectory loaded: {len(self.reference_trajectory)} points")
+                if self.publish_visualization:
+                    self.trajectory_points = [
+                        {'x': s.x, 'y': s.y, 'v': s.v, 'theta': s.theta}
+                        for s in self.reference_trajectory
+                    ]
+            else:
+                self.get_logger().error("CSV preprocessing failed")
+                self.path_ready = False
+
+        except Exception as e:
+            self.get_logger().error(f"Error loading CSV trajectory: {e}")
+            self.path_ready = False
+
+    def _load_trajectory_from_csv(self, path):
+        """Load preprocessed trajectory from CSV file"""
+        data = []
+        try:
+            with open(path, 'r') as csvfile:
+                reader = csv.DictReader(csvfile)
+                for row in reader:
+                    state = VehicleState()
+                    state.x = float(row['x'])
+                    state.y = float(row['y'])
+                    state.v = float(row['v'])
+                    state.theta = float(row['theta']) if 'theta' in row else 0.0
+                    state.delta = 0.0
+                    data.append(state)
+
+            # Calculate theta from consecutive points if not provided
+            if len(data) > 1 and data[0].theta == 0.0:
+                for i in range(len(data)):
+                    if i < len(data) - 1:
+                        dx = data[i + 1].x - data[i].x
+                        dy = data[i + 1].y - data[i].y
+                        data[i].theta = math.atan2(dy, dx)
+                    else:
+                        data[i].theta = data[i - 1].theta
+
+            valid_points = [s for s in data if self._validate_vehicle_state(s)]
+            removed = len(data) - len(valid_points)
+            if removed > 0:
+                self.get_logger().warn(f"Removed {removed} invalid trajectory points from CSV")
+            return valid_points
+
+        except Exception as e:
+            self.get_logger().error(f"Failed to load CSV trajectory: {e}")
+            return data
+
     def _create_publishers(self):
         """Create ROS2 publishers"""
         # Core publishers (always available)
@@ -488,6 +580,10 @@ class HorizonMapperNode(Node):
         # Visualization timer
         if self.publish_visualization:
             self.viz_timer = self.create_timer(0.2, self._publish_visualization)
+
+        # If using CSV source, load trajectory immediately at startup
+        if self.use_csv_path:
+            self.preprocess_and_load_trajectory()
 
     def log_info(self, message):
         """Log info messages only if logging is enabled"""

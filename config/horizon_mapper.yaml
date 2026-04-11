@@ -15,6 +15,11 @@ horizon_mapper_node:
     max_steering_angle: 0.9 # Maximum steering angle (radians)
     min_speed: 0.1 # Minimum velocity (m/s)
 
+    # Path Source: set use_csv_path to true to load from CSV file instead of subscribing to a topic
+    use_csv_path: false
+    csv_input_path: "horizon_mapper/optimal_trajectory.csv"
+    csv_output_path: "horizon_mapper/ref_trajectory.csv"
+
     # Input Topics
     odom_topic: "/car_state/odom"
     scan_topic: "/scan"
