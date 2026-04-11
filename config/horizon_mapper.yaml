@@ -16,6 +16,7 @@ horizon_mapper_node:
     min_speed: 0.1 # Minimum velocity (m/s)
 
     # Path Source: set use_csv_path to true to load from CSV file instead of subscribing to a topic
+    # csv_input_path should point to generated optimal trajectory input.
     use_csv_path: false
     csv_input_path: "horizon_mapper/optimal_trajectory.csv"
     csv_output_path: "horizon_mapper/ref_trajectory.csv"

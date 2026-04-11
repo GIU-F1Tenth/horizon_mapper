@@ -54,7 +54,44 @@ import numpy as np
 import colorsys
 import os
 from typing import List, Tuple, Optional
-from tf_transformations import euler_from_quaternion, quaternion_from_euler
+try:
+    from tf_transformations import euler_from_quaternion, quaternion_from_euler
+except ImportError:
+    def euler_from_quaternion(quat):
+        """Fallback conversion: quaternion [x, y, z, w] -> roll, pitch, yaw."""
+        x, y, z, w = quat
+
+        sinr_cosp = 2.0 * (w * x + y * z)
+        cosr_cosp = 1.0 - 2.0 * (x * x + y * y)
+        roll = math.atan2(sinr_cosp, cosr_cosp)
+
+        sinp = 2.0 * (w * y - z * x)
+        if abs(sinp) >= 1.0:
+            pitch = math.copysign(math.pi / 2.0, sinp)
+        else:
+            pitch = math.asin(sinp)
+
+        siny_cosp = 2.0 * (w * z + x * y)
+        cosy_cosp = 1.0 - 2.0 * (y * y + z * z)
+        yaw = math.atan2(siny_cosp, cosy_cosp)
+
+        return roll, pitch, yaw
+
+    def quaternion_from_euler(roll, pitch, yaw):
+        """Fallback conversion: roll, pitch, yaw -> quaternion [x, y, z, w]."""
+        cy = math.cos(yaw * 0.5)
+        sy = math.sin(yaw * 0.5)
+        cp = math.cos(pitch * 0.5)
+        sp = math.sin(pitch * 0.5)
+        cr = math.cos(roll * 0.5)
+        sr = math.sin(roll * 0.5)
+
+        w = cr * cp * cy + sr * sp * sy
+        x = sr * cp * cy - cr * sp * sy
+        y = cr * sp * cy + sr * cp * sy
+        z = cr * cp * sy - sr * sp * cy
+
+        return [x, y, z, w]
 from ament_index_python.packages import get_package_share_directory
 
 # Default configuration class - provides fallback values
@@ -244,6 +281,7 @@ class HorizonMapperNode(Node):
         self.current_vehicle_state.delta = 0.0
         self.current_pose_estimate = None
         self.trajectory_index = 0
+        self.csv_retry_timer = None
         
         # Boundary arrays from external source
         self.received_left_bounds = []
@@ -490,6 +528,15 @@ class HorizonMapperNode(Node):
             self.get_logger().error("use_csv_path is true but csv_input_path or csv_output_path is not set")
             return
 
+        if not os.path.isfile(self.csv_input_path):
+            self.get_logger().warn(
+                f"CSV input not found yet: {self.csv_input_path}. Waiting for file generation..."
+            )
+            if self.csv_retry_timer is None:
+                self.csv_retry_timer = self.create_timer(1.0, self._retry_csv_load)
+            self.path_ready = False
+            return
+
         try:
             self.log_info(f"Loading trajectory from CSV: {self.csv_input_path}")
             success = preprocess_trajectory(
@@ -504,6 +551,9 @@ class HorizonMapperNode(Node):
                 self.reference_trajectory = self._load_trajectory_from_csv(self.csv_output_path)
                 self.path_ready = len(self.reference_trajectory) > 0
                 self.log_info(f"CSV trajectory loaded: {len(self.reference_trajectory)} points")
+                if self.csv_retry_timer is not None:
+                    self.csv_retry_timer.cancel()
+                    self.csv_retry_timer = None
                 if self.publish_visualization:
                     self.trajectory_points = [
                         {'x': s.x, 'y': s.y, 'v': s.v, 'theta': s.theta}
@@ -516,6 +566,15 @@ class HorizonMapperNode(Node):
         except Exception as e:
             self.get_logger().error(f"Error loading CSV trajectory: {e}")
             self.path_ready = False
+
+    def _retry_csv_load(self):
+        """Retry loading CSV trajectory once input file becomes available."""
+        if self.path_ready:
+            if self.csv_retry_timer is not None:
+                self.csv_retry_timer.cancel()
+                self.csv_retry_timer = None
+            return
+        self.preprocess_and_load_trajectory()
 
     def _load_trajectory_from_csv(self, path):
         """Load preprocessed trajectory from CSV file"""
