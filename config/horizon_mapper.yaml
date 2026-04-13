@@ -18,11 +18,11 @@ horizon_mapper_node:
     # Path Source: set use_csv_path to true to load from CSV file instead of subscribing to a topic
     # csv_input_path should point to generated optimal trajectory input.
     use_csv_path: true
-    csv_input_path: "horizon_mapper/optimal_trajectory.csv"
-    csv_output_path: "horizon_mapper/ref_trajectory.csv"
+    csv_input_path: "optimal_trajectory.csv"
+    csv_output_path: "ref_trajectory.csv"
 
     # Input Topics
-    odom_topic: "/car_state/odom"
+    odom_topic: "/odom"
     scan_topic: "/scan"
     initialpose_topic: "/initialpose"
     path_topic: "/path"
@@ -32,7 +32,7 @@ horizon_mapper_node:
     bound_adjustment_topic: "/ctrl/bound_adjustments" 
 
     # Output Topics
-    reference_path_topic: "/horizon_mapper/reference_path"
+    reference_path_topic: "/path_planner/horizon_mapper/reference_path"
     reference_trajectory_topic: "/horizon_mapper/reference_trajectory"
     status_topic: "/horizon_mapper/path_ready"
     constrained_trajectory_topic: "/horizon_mapper/constrained_trajectory"

@@ -268,6 +268,9 @@ class HorizonMapperNode(Node):
         self.csv_input_path = self.get_parameter('csv_input_path').value
         self.csv_output_path = self.get_parameter('csv_output_path').value
 
+        self.csv_input_path = self._resolve_csv_path(self.csv_input_path)
+        self.csv_output_path = self._resolve_csv_path(self.csv_output_path, prefer_output=True)
+
     def _initialize_state_variables(self):
         """Initialize state variables"""
         # Legacy state variables
@@ -566,6 +569,53 @@ class HorizonMapperNode(Node):
         except Exception as e:
             self.get_logger().error(f"Error loading CSV trajectory: {e}")
             self.path_ready = False
+
+    def _resolve_csv_path(self, path, prefer_output=False):
+        """Resolve CSV paths relative to the package share directory when needed."""
+        if not path:
+            return path
+
+        expanded_path = os.path.expanduser(path)
+        if os.path.isabs(expanded_path) and os.path.exists(expanded_path):
+            return expanded_path
+
+        package_share = get_package_share_directory('horizon_mapper')
+        candidate_names = []
+
+        if os.path.isabs(expanded_path):
+            candidate_names.append(expanded_path.lstrip(os.sep))
+
+        candidate_names.extend([
+            expanded_path,
+            os.path.basename(expanded_path),
+        ])
+
+        for candidate_name in candidate_names:
+            if not candidate_name:
+                continue
+
+            candidate_paths = []
+            if os.path.isabs(candidate_name):
+                candidate_paths.append(candidate_name)
+            else:
+                candidate_paths.extend([
+                    os.path.join(package_share, candidate_name),
+                    os.path.join(package_share, 'config', candidate_name),
+                ])
+
+            for candidate_path in candidate_paths:
+                if os.path.exists(candidate_path):
+                    return candidate_path
+
+        if os.path.isabs(expanded_path):
+            if expanded_path.startswith('/path_planner/'):
+                return os.path.join(package_share, os.path.basename(expanded_path))
+            return expanded_path
+
+        if prefer_output:
+            return os.path.join(package_share, expanded_path)
+
+        return os.path.join(package_share, expanded_path)
 
     def _retry_csv_load(self):
         """Retry loading CSV trajectory once input file becomes available."""

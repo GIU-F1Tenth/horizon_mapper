@@ -10,20 +10,43 @@ def process_csv(input_path, output_path, wheelbase=0.33, max_steering=0.5, min_v
     """Process trajectory CSV file and add steering angles"""
     try:
         with open(input_path, 'r') as infile:
-            reader = csv.DictReader(infile)
-            data = list(reader)
+            sample = infile.readline()
+            infile.seek(0)
+
+            if not sample:
+                raise ValueError("Input CSV is empty")
+
+            has_named_header = any(token.strip().lower() == 'x' for token in sample.split(','))
+
+            if has_named_header:
+                reader = csv.DictReader(infile)
+                data = list(reader)
+            else:
+                reader = csv.reader(infile)
+                data = [row for row in reader if row]
 
         processed = []
         N = len(data)
+
+        if N == 0:
+            raise ValueError("Input CSV does not contain any trajectory rows")
+
+        def get_point(row):
+            if isinstance(row, dict):
+                return float(row['x']), float(row['y']), float(row['v'])
+
+            if len(row) < 3:
+                raise ValueError("Each trajectory row must contain at least x, y, and v columns")
+
+            return float(row[0]), float(row[1]), float(row[2])
 
         for i in range(N):
             # Get current and next point for heading calculation
             i1 = i % N
             i2 = (i + 1) % N
 
-            x1, y1 = float(data[i1]['x']), float(data[i1]['y'])
-            x2, y2 = float(data[i2]['x']), float(data[i2]['y'])
-            v = float(data[i1]['v'])
+            x1, y1, v = get_point(data[i1])
+            x2, y2, _ = get_point(data[i2])
 
             # Ensure velocity is above minimum threshold for MPC stability
             v = max(v, min_velocity)
