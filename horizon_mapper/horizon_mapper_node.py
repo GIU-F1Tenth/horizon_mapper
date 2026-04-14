@@ -216,6 +216,8 @@ class HorizonMapperNode(Node):
                                ParameterDescriptor(description='Map frame ID'))
         self.declare_parameter('qos_depth', 10,
                                ParameterDescriptor(description='QoS queue depth for topics'))
+        self.declare_parameter('car_viz_topic', '/horizon_mapper/car_visualization',
+                               ParameterDescriptor(description='Topic for car position, lookahead, and direction visualization'))
 
         # CSV path source parameters
         self.declare_parameter('use_csv_path', default_config.use_csv_path,
@@ -262,6 +264,7 @@ class HorizonMapperNode(Node):
         self.velocity_color_scale = self.get_parameter('velocity_color_scale').value
         self.map_frame = self.get_parameter('map_frame').value
         self.qos_depth = self.get_parameter('qos_depth').value
+        self.car_viz_topic = self.get_parameter('car_viz_topic').value
 
         # CSV path source parameters
         self.use_csv_path = self.get_parameter('use_csv_path').value
@@ -680,6 +683,8 @@ class HorizonMapperNode(Node):
                     MarkerArray, self.corridor_viz_topic, self.qos_depth)
                 self.velocity_path_pub = self.create_publisher(
                     MarkerArray, self.velocity_viz_topic, self.qos_depth)
+                self.car_viz_pub = self.create_publisher(
+                    MarkerArray, self.car_viz_topic, self.qos_depth)
 
     def _create_timers(self):
         """Create ROS2 timers"""
@@ -1167,6 +1172,111 @@ class HorizonMapperNode(Node):
 
         self._publish_corridor_visualization()
         self._publish_velocity_visualization()
+        self._publish_car_visualization()
+
+    def _publish_car_visualization(self):
+        """Publish car position sphere, lookahead distance circle, and direction arrow"""
+        if not self.current_pose:
+            return
+
+        marker_array = MarkerArray()
+        stamp = self.get_clock().now().to_msg()
+
+        car_x = self.current_vehicle_state.x
+        car_y = self.current_vehicle_state.y
+
+        # --- 1. Car position sphere (white) ---
+        car_marker = Marker()
+        car_marker.header.stamp = stamp
+        car_marker.header.frame_id = self.map_frame
+        car_marker.ns = "car_position"
+        car_marker.id = 0
+        car_marker.type = Marker.SPHERE
+        car_marker.action = Marker.ADD
+        car_marker.pose.position.x = car_x
+        car_marker.pose.position.y = car_y
+        car_marker.pose.position.z = 0.15
+        car_marker.pose.orientation.w = 1.0
+        car_marker.scale.x = 0.35
+        car_marker.scale.y = 0.35
+        car_marker.scale.z = 0.2
+        car_marker.color.r = 1.0
+        car_marker.color.g = 1.0
+        car_marker.color.b = 1.0
+        car_marker.color.a = 1.0
+        marker_array.markers.append(car_marker)
+
+        if not self.path_ready or len(self.trajectory_points) == 0:
+            self.car_viz_pub.publish(marker_array)
+            return
+
+        def get_value(pt, key):
+            return pt[key] if isinstance(pt, dict) else getattr(pt, key)
+
+        # Find the closest trajectory point then pick the next one as the lookahead target
+        closest_idx = self._find_closest_point_index()
+        target_idx = (closest_idx + 1) % len(self.trajectory_points)
+        target_pt = self.trajectory_points[target_idx]
+
+        tx = get_value(target_pt, 'x')
+        ty = get_value(target_pt, 'y')
+        lookahead_dist = math.sqrt((tx - car_x) ** 2 + (ty - car_y) ** 2)
+
+        # --- 2. Lookahead distance circle (cyan LINE_STRIP) ---
+        circle_marker = Marker()
+        circle_marker.header.stamp = stamp
+        circle_marker.header.frame_id = self.map_frame
+        circle_marker.ns = "lookahead_circle"
+        circle_marker.id = 0
+        circle_marker.type = Marker.LINE_STRIP
+        circle_marker.action = Marker.ADD
+        circle_marker.pose.orientation.w = 1.0
+        circle_marker.scale.x = 0.03  # Line width
+        circle_marker.color.r = 0.0
+        circle_marker.color.g = 1.0
+        circle_marker.color.b = 1.0
+        circle_marker.color.a = 0.8
+
+        num_segments = 48
+        for j in range(num_segments + 1):
+            angle = 2.0 * math.pi * j / num_segments
+            pt = Point()
+            pt.x = car_x + lookahead_dist * math.cos(angle)
+            pt.y = car_y + lookahead_dist * math.sin(angle)
+            pt.z = 0.05
+            circle_marker.points.append(pt)
+        marker_array.markers.append(circle_marker)
+
+        # --- 3. Direction arrow from car to lookahead target (orange) ---
+        direction_marker = Marker()
+        direction_marker.header.stamp = stamp
+        direction_marker.header.frame_id = self.map_frame
+        direction_marker.ns = "direction_arrow"
+        direction_marker.id = 0
+        direction_marker.type = Marker.ARROW
+        direction_marker.action = Marker.ADD
+
+        start_pt = Point()
+        start_pt.x = car_x
+        start_pt.y = car_y
+        start_pt.z = 0.2
+
+        end_pt = Point()
+        end_pt.x = tx
+        end_pt.y = ty
+        end_pt.z = 0.2
+
+        direction_marker.points = [start_pt, end_pt]
+        direction_marker.scale.x = 0.05   # Shaft diameter
+        direction_marker.scale.y = 0.12   # Head diameter
+        direction_marker.scale.z = 0.15   # Head length
+        direction_marker.color.r = 1.0
+        direction_marker.color.g = 0.5
+        direction_marker.color.b = 0.0
+        direction_marker.color.a = 1.0
+        marker_array.markers.append(direction_marker)
+
+        self.car_viz_pub.publish(marker_array)
 
     def _publish_corridor_visualization(self):
         """Publish corridor visualization with bounds and LIDAR risk coloring"""
