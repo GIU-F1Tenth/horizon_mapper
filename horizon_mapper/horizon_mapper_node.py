@@ -218,6 +218,8 @@ class HorizonMapperNode(Node):
                                ParameterDescriptor(description='QoS queue depth for topics'))
         self.declare_parameter('car_viz_topic', '/horizon_mapper/car_visualization',
                                ParameterDescriptor(description='Topic for car position, lookahead, and direction visualization'))
+        self.declare_parameter('reverse_direction', False,
+                               ParameterDescriptor(description='If true, traverse the trajectory in reverse (counter-direction)'))
 
         # CSV path source parameters
         self.declare_parameter('use_csv_path', default_config.use_csv_path,
@@ -265,6 +267,7 @@ class HorizonMapperNode(Node):
         self.map_frame = self.get_parameter('map_frame').value
         self.qos_depth = self.get_parameter('qos_depth').value
         self.car_viz_topic = self.get_parameter('car_viz_topic').value
+        self.reverse_direction = self.get_parameter('reverse_direction').value
 
         # CSV path source parameters
         self.use_csv_path = self.get_parameter('use_csv_path').value
@@ -815,8 +818,13 @@ class HorizonMapperNode(Node):
 
         # Search window: look back a little (for minor localization jitter)
         # and forward enough to always catch the next point at speed.
-        search_back = 5
-        search_forward = 30
+        # When reversing the direction the "ahead" side flips.
+        if self.reverse_direction:
+            search_back = 30
+            search_forward = 5
+        else:
+            search_back = 5
+            search_forward = 30
 
         min_distance = float('inf')
         closest_index = self.trajectory_index
@@ -864,7 +872,8 @@ class HorizonMapperNode(Node):
 
             # Add reference trajectory points for the prediction horizon
             for i in range(self.horizon):
-                ref_index = (closest_index + i) % len(self.reference_trajectory)
+                step = -i if self.reverse_direction else i
+                ref_index = (closest_index + step) % len(self.reference_trajectory)
                 ref_point = self.reference_trajectory[ref_index]
 
                 # Validate reference point before using it
@@ -1103,7 +1112,8 @@ class HorizonMapperNode(Node):
 
         # Generate horizon points
         for i in range(self.horizon):
-            point_index = (start_index + i) % len(self.trajectory_points)
+            step = -i if self.reverse_direction else i
+            point_index = (start_index + step) % len(self.trajectory_points)
             traj_point = self.trajectory_points[point_index]
 
             # Helper to get values from point (handles both dict and VehicleState)
@@ -1219,7 +1229,7 @@ class HorizonMapperNode(Node):
 
         # Find the closest trajectory point then pick the next one as the lookahead target
         closest_idx = self._find_closest_point_index()
-        target_idx = (closest_idx + 1) % len(self.trajectory_points)
+        target_idx = (closest_idx - 1) % len(self.trajectory_points) if self.reverse_direction else (closest_idx + 1) % len(self.trajectory_points)
         target_pt = self.trajectory_points[target_idx]
 
         tx = get_value(target_pt, 'x')
@@ -1330,8 +1340,10 @@ class HorizonMapperNode(Node):
             return scan_range - r
 
         # Create corridor markers
-        for i in range(min(self.horizon, len(self.trajectory_points) - start_index)):
-            point_index = start_index + i
+        n_traj = len(self.trajectory_points)
+        for i in range(min(self.horizon, n_traj)):
+            step = -i if self.reverse_direction else i
+            point_index = (start_index + step) % n_traj
             traj_point = self.trajectory_points[point_index]
 
             # Get values from point
