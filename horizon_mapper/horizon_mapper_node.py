@@ -799,22 +799,47 @@ class HorizonMapperNode(Node):
         return response
 
     def find_closest_trajectory_point(self):
-        """Find the closest point on the reference trajectory to current position"""
+        """Find the closest point on the reference trajectory to current position.
+
+        Uses a windowed search around self.trajectory_index so the result
+        always advances forward along the track and never teleports to a
+        distant geometrically-close point on a closed-loop circuit.
+        The shared index is updated in-place so every caller stays in sync.
+        """
         if not self.reference_trajectory:
             return 0
 
-        min_distance = float('inf')
-        closest_index = 0
-
+        n = len(self.reference_trajectory)
         current_x = self.current_vehicle_state.x
         current_y = self.current_vehicle_state.y
 
-        for i, point in enumerate(self.reference_trajectory):
-            distance = np.sqrt((point.x - current_x)**2 + (point.y - current_y)**2)
+        # Search window: look back a little (for minor localization jitter)
+        # and forward enough to always catch the next point at speed.
+        search_back = 5
+        search_forward = 30
+
+        min_distance = float('inf')
+        closest_index = self.trajectory_index
+
+        for offset in range(-search_back, search_forward + 1):
+            i = (self.trajectory_index + offset) % n
+            pt = self.reference_trajectory[i]
+            distance = math.sqrt((pt.x - current_x) ** 2 + (pt.y - current_y) ** 2)
             if distance < min_distance:
                 min_distance = distance
                 closest_index = i
 
+        # If the window search found nothing better than the global minimum
+        # (e.g. first frame or after a large jump), fall back to a full scan
+        # once and re-anchor the index.
+        if min_distance > 3.0:
+            for i, pt in enumerate(self.reference_trajectory):
+                distance = math.sqrt((pt.x - current_x) ** 2 + (pt.y - current_y) ** 2)
+                if distance < min_distance:
+                    min_distance = distance
+                    closest_index = i
+
+        self.trajectory_index = closest_index
         return closest_index
 
     def create_predictive_trajectory(self):
@@ -979,30 +1004,9 @@ class HorizonMapperNode(Node):
                                    f"confidence={self.confidence_adjustment:.3f}")
 
     def _find_closest_point_index(self) -> int:
-        """Find the closest trajectory point to current position"""
-        if not self.publish_visualization or not hasattr(self, 'trajectory_points') or len(self.trajectory_points) == 0:
-            return self.find_closest_trajectory_point()
-
-        if not self.path_ready:
-            return 0
-
-        # Use current vehicle state for position
-        current_x = self.current_vehicle_state.x
-        current_y = self.current_vehicle_state.y
-
-        min_distance = float('inf')
-        closest_index = 0
-
-        for i, point in enumerate(self.trajectory_points):
-            # Handle both dict and VehicleState formats
-            px = point['x'] if isinstance(point, dict) else point.x
-            py = point['y'] if isinstance(point, dict) else point.y
-            distance = math.sqrt((px - current_x)**2 + (py - current_y)**2)
-            if distance < min_distance:
-                min_distance = distance
-                closest_index = i
-
-        return closest_index
+        """Return the closest trajectory index, delegating to the canonical
+        windowed search so trajectory_index stays in sync across all callers."""
+        return self.find_closest_trajectory_point()
 
     def _compute_path_normal(self, index: int) -> Tuple[float, float]:
         """Compute the normal vector to the path at given index"""
