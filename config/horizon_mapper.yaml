@@ -22,7 +22,7 @@ horizon_mapper_node:
     csv_output_path: "ref_trajectory.csv"
 
     # Input Topics
-    odom_topic: "/odom"
+    odom_topic: "/ego_racecar/odom"
     scan_topic: "/scan"
     initialpose_topic: "/initialpose"
     path_topic: "/path"
@@ -44,15 +44,31 @@ horizon_mapper_node:
     # Traversal direction — set to true to run the trajectory in reverse
     reverse_direction: false
 
-    # Advanced Mode Settings
-    default_left_bound: 1.0 
-    default_right_bound: 1.0 
-    default_confidence: 0.8  
-    adaptive_bounds: true   
+    # ── Adaptive track geometry ─────────────────────────────────────────────
+    # Set track_width to the total driveable width of your map in metres.
+    # The node will set left_bound = right_bound = track_width / 2 automatically.
+    # Set to 0.0 to use default_left_bound / default_right_bound directly.
+    #
+    #   Narrow indoor lab track  → track_width: 1.0
+    #   Typical GIU / hangar     → track_width: 2.0   (default)
+    #   Wide outdoor circuit     → track_width: 3.5
+    track_width: 2.0
 
-    # Visualization
-    publish_visualization: false
+    # Fallback manual bounds (used only when track_width: 0.0)
+    default_left_bound: 1.0
+    default_right_bound: 1.0
+    default_confidence: 0.8
+    adaptive_bounds: true
+
+    # ── Direction-arrow lookahead ────────────────────────────────────────────
+    # Number of trajectory steps ahead for the direction arrow in RViz.
+    # 0 = auto (horizon_N // 4, minimum 5 steps).
+    # Increase on fast/sparse trajectories; decrease on tight maps.
+    viz_lookahead_steps: 0
+
+    # ── Visualization ────────────────────────────────────────────────────────
+    publish_visualization: true
     corridor_viz_topic: "/horizon_mapper/corridor_visualization"
-    velocity_viz_topic: "/horizon_mapper/velocity_path" 
-    velocity_color_scale: 10.0 
-    map_frame: "map"          
+    velocity_viz_topic: "/horizon_mapper/velocity_path"
+    velocity_color_scale: 10.0
+    map_frame: "map"

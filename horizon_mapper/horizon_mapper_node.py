@@ -217,9 +217,20 @@ class HorizonMapperNode(Node):
         self.declare_parameter('qos_depth', 10,
                                ParameterDescriptor(description='QoS queue depth for topics'))
         self.declare_parameter('car_viz_topic', '/horizon_mapper/car_visualization',
-                               ParameterDescriptor(description='Topic for car position, lookahead, and direction visualization'))
+                               ParameterDescriptor(description='Topic for lookahead circle and direction arrow visualization'))
         self.declare_parameter('reverse_direction', False,
                                ParameterDescriptor(description='If true, traverse the trajectory in reverse (counter-direction)'))
+
+        # Adaptive track geometry – tune per map
+        self.declare_parameter('track_width', 0.0,
+                               ParameterDescriptor(
+                                   description='Total driveable track width [m]. '
+                                               'When > 0 overrides default_left_bound and default_right_bound '
+                                               '(sets each to track_width / 2). Use 0 to keep manual bounds.'))
+        self.declare_parameter('viz_lookahead_steps', 0,
+                               ParameterDescriptor(
+                                   description='Number of trajectory steps ahead for the direction arrow. '
+                                               '0 = auto (horizon_N // 4, min 5).'))
 
         # CSV path source parameters
         self.declare_parameter('use_csv_path', default_config.use_csv_path,
@@ -268,6 +279,16 @@ class HorizonMapperNode(Node):
         self.qos_depth = self.get_parameter('qos_depth').value
         self.car_viz_topic = self.get_parameter('car_viz_topic').value
         self.reverse_direction = self.get_parameter('reverse_direction').value
+
+        # Adaptive track geometry
+        track_width = self.get_parameter('track_width').value
+        if track_width > 0.0:
+            half = track_width / 2.0
+            self.default_left_bound = half
+            self.default_right_bound = half
+
+        viz_steps_param = self.get_parameter('viz_lookahead_steps').value
+        self.viz_lookahead_steps = viz_steps_param if viz_steps_param > 0 else max(5, self.horizon // 4)
 
         # CSV path source parameters
         self.use_csv_path = self.get_parameter('use_csv_path').value
@@ -644,7 +665,7 @@ class HorizonMapperNode(Node):
                     state.y = float(row['y'])
                     state.v = float(row['v'])
                     state.theta = float(row['theta']) if 'theta' in row else 0.0
-                    state.delta = 0.0
+                    state.delta = float(row['delta']) if 'delta' in row else 0.0
                     data.append(state)
 
             # Calculate theta from consecutive points if not provided
@@ -804,51 +825,48 @@ class HorizonMapperNode(Node):
     def find_closest_trajectory_point(self):
         """Find the closest point on the reference trajectory to current position.
 
-        Uses a windowed search around self.trajectory_index so the result
-        always advances forward along the track and never teleports to a
-        distant geometrically-close point on a closed-loop circuit.
-        The shared index is updated in-place so every caller stays in sync.
+        Performs a full O(n) scan to guarantee the globally closest point is
+        found regardless of how far trajectory_index has drifted — critical on
+        compact closed-loop tracks where a windowed search can lock onto the
+        wrong nearby point.
+
+        Among geometrically tied candidates (within TIE_RADIUS of the global
+        minimum) the one requiring the fewest forward steps from the current
+        trajectory_index is preferred, preventing cross-track jumps at places
+        where two track sections run close together.
         """
         if not self.reference_trajectory:
             return 0
 
         n = len(self.reference_trajectory)
-        current_x = self.current_vehicle_state.x
-        current_y = self.current_vehicle_state.y
+        car_x = self.current_vehicle_state.x
+        car_y = self.current_vehicle_state.y
 
-        # Search window: look back a little (for minor localization jitter)
-        # and forward enough to always catch the next point at speed.
-        # When reversing the direction the "ahead" side flips.
+        # Full scan – for typical trajectory sizes (< 2000 pts) this is fast at 10 Hz
+        distances = []
+        min_dist = float('inf')
+        for pt in self.reference_trajectory:
+            d = math.sqrt((pt.x - car_x) ** 2 + (pt.y - car_y) ** 2)
+            distances.append(d)
+            if d < min_dist:
+                min_dist = d
+
+        # Collect all points within TIE_RADIUS of the global minimum.
+        # Among them prefer the one needing the fewest forward steps from
+        # trajectory_index so we don't jump backwards across the track.
+        TIE_RADIUS = 0.30  # metres
+        candidates = [i for i, d in enumerate(distances) if d <= min_dist + TIE_RADIUS]
+
+        def forward_steps(i):
+            return (i - self.trajectory_index + n) % n
+
         if self.reverse_direction:
-            search_back = 30
-            search_forward = 5
+            best = min(candidates, key=lambda i: (n - forward_steps(i)) % n)
         else:
-            search_back = 5
-            search_forward = 30
+            best = min(candidates, key=forward_steps)
 
-        min_distance = float('inf')
-        closest_index = self.trajectory_index
-
-        for offset in range(-search_back, search_forward + 1):
-            i = (self.trajectory_index + offset) % n
-            pt = self.reference_trajectory[i]
-            distance = math.sqrt((pt.x - current_x) ** 2 + (pt.y - current_y) ** 2)
-            if distance < min_distance:
-                min_distance = distance
-                closest_index = i
-
-        # If the window search found nothing better than the global minimum
-        # (e.g. first frame or after a large jump), fall back to a full scan
-        # once and re-anchor the index.
-        if min_distance > 3.0:
-            for i, pt in enumerate(self.reference_trajectory):
-                distance = math.sqrt((pt.x - current_x) ** 2 + (pt.y - current_y) ** 2)
-                if distance < min_distance:
-                    min_distance = distance
-                    closest_index = i
-
-        self.trajectory_index = closest_index
-        return closest_index
+        self.trajectory_index = best
+        return best
 
     def create_predictive_trajectory(self):
         """Create predictive trajectory horizon starting from closest reference point"""
@@ -876,12 +894,12 @@ class HorizonMapperNode(Node):
                 ref_index = (closest_index + step) % len(self.reference_trajectory)
                 ref_point = self.reference_trajectory[ref_index]
 
-                # Validate reference point before using it
+                # Skip individual invalid points rather than aborting the entire horizon
                 if not self._validate_vehicle_state(ref_point):
-                    self.get_logger().error(
-                        f"Reference point {ref_index} contains invalid values: "
+                    self.get_logger().warn(
+                        f"Skipping invalid reference point {ref_index}: "
                         f"x={ref_point.x}, y={ref_point.y}, v={ref_point.v}, theta={ref_point.theta}")
-                    return VehicleStateArray()
+                    continue
 
                 # Create predicted state
                 predicted_state = VehicleState()
@@ -889,7 +907,7 @@ class HorizonMapperNode(Node):
                 predicted_state.y = ref_point.y
                 predicted_state.v = ref_point.v
                 predicted_state.theta = ref_point.theta  # Include heading angle - critical for MPC!
-                predicted_state.delta = 0.0  # MPC computes steering, not trajectory publisher
+                predicted_state.delta = ref_point.delta  # bicycle-model reference steering
 
                 trajectory_msg.states.append(predicted_state)
 
@@ -1018,36 +1036,36 @@ class HorizonMapperNode(Node):
         return self.find_closest_trajectory_point()
 
     def _compute_path_normal(self, index: int) -> Tuple[float, float]:
-        """Compute the normal vector to the path at given index"""
-        if not hasattr(self, 'trajectory_points') or len(self.trajectory_points) == 0 or index >= len(self.trajectory_points) - 1:
+        """Compute the unit normal vector to the path at the given index.
+
+        Uses central differences with wrap-around so the last point of a
+        closed-loop trajectory is handled correctly instead of returning a
+        default (0, 1) normal.
+        """
+        if not hasattr(self, 'trajectory_points') or len(self.trajectory_points) == 0:
             return 0.0, 1.0
 
-        # Helper to get x, y from point (handles both dict and VehicleState)
+        n = len(self.trajectory_points)
+
         def get_xy(point):
             if isinstance(point, dict):
                 return point['x'], point['y']
-            else:
-                return point.x, point.y
+            return point.x, point.y
 
-        # Use finite differences to compute tangent
-        if index > 0:
-            x1, y1 = get_xy(self.trajectory_points[index - 1])
-            x2, y2 = get_xy(self.trajectory_points[index + 1])
-            dx = x2 - x1
-            dy = y2 - y1
-        else:
-            x1, y1 = get_xy(self.trajectory_points[index])
-            x2, y2 = get_xy(self.trajectory_points[index + 1])
-            dx = x2 - x1
-            dy = y2 - y1
+        # Central-difference tangent with wrap-around indices
+        prev_idx = (index - 1) % n
+        next_idx = (index + 1) % n
+        x1, y1 = get_xy(self.trajectory_points[prev_idx])
+        x2, y2 = get_xy(self.trajectory_points[next_idx])
+        dx = x2 - x1
+        dy = y2 - y1
 
-        # Normalize tangent
-        length = math.sqrt(dx**2 + dy**2)
-        if length > 0:
+        length = math.sqrt(dx ** 2 + dy ** 2)
+        if length > 1e-9:
             dx /= length
             dy /= length
 
-        # Normal is perpendicular to tangent (rotated 90 degrees)
+        # Normal is perpendicular to tangent (rotated 90°)
         return -dy, dx
 
     def _compute_adaptive_bounds(self, index: int, velocity: float) -> Tuple[float, float, float]:
@@ -1193,43 +1211,24 @@ class HorizonMapperNode(Node):
         if not self.current_pose:
             return
 
+        if not self.path_ready or len(self.trajectory_points) == 0:
+            return
+
         marker_array = MarkerArray()
         stamp = self.get_clock().now().to_msg()
 
         car_x = self.current_vehicle_state.x
         car_y = self.current_vehicle_state.y
 
-        # --- 1. Car position sphere (white) ---
-        car_marker = Marker()
-        car_marker.header.stamp = stamp
-        car_marker.header.frame_id = self.map_frame
-        car_marker.ns = "car_position"
-        car_marker.id = 0
-        car_marker.type = Marker.SPHERE
-        car_marker.action = Marker.ADD
-        car_marker.pose.position.x = car_x
-        car_marker.pose.position.y = car_y
-        car_marker.pose.position.z = 0.15
-        car_marker.pose.orientation.w = 1.0
-        car_marker.scale.x = 0.35
-        car_marker.scale.y = 0.35
-        car_marker.scale.z = 0.2
-        car_marker.color.r = 1.0
-        car_marker.color.g = 1.0
-        car_marker.color.b = 1.0
-        car_marker.color.a = 1.0
-        marker_array.markers.append(car_marker)
-
-        if not self.path_ready or len(self.trajectory_points) == 0:
-            self.car_viz_pub.publish(marker_array)
-            return
-
         def get_value(pt, key):
             return pt[key] if isinstance(pt, dict) else getattr(pt, key)
 
-        # Find the closest trajectory point then pick the next one as the lookahead target
+        # Find the closest index, then jump ahead by viz_lookahead_steps so the
+        # direction arrow always points forward regardless of point density.
         closest_idx = self._find_closest_point_index()
-        target_idx = (closest_idx - 1) % len(self.trajectory_points) if self.reverse_direction else (closest_idx + 1) % len(self.trajectory_points)
+        n = len(self.trajectory_points)
+        step_sign = -1 if self.reverse_direction else 1
+        target_idx = (closest_idx + step_sign * self.viz_lookahead_steps) % n
         target_pt = self.trajectory_points[target_idx]
 
         tx = get_value(target_pt, 'x')
@@ -1724,5 +1723,4 @@ def main(args=None):
 
 
 if __name__ == '__main__':
-    main()
     main()
