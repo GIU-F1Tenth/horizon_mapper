@@ -43,10 +43,12 @@ from giu_f1t_interfaces.msg import (
     BoundAdjustment,
     ConstraintStatus,
 )
+from sensor_msgs.msg import LaserScan
 from .preprocess_trajectory import preprocess_trajectory
 import rclpy
 from rclpy.node import Node
 from rclpy.parameter import Parameter
+from rclpy.qos import QoSProfile, ReliabilityPolicy, DurabilityPolicy, HistoryPolicy, qos_profile_sensor_data
 from rcl_interfaces.msg import ParameterDescriptor, ParameterType
 import csv
 import math
@@ -335,12 +337,10 @@ class HorizonMapperNode(Node):
             self.constraints_active = True
 
     def _create_subscribers(self):
-        """Create ROS2 subscribers"""
-        from sensor_msgs.msg import LaserScan
-        
+        """Create ROS2 subscribers"""        
         # Core subscribers
         self.odom_sub = self.create_subscription(
-            Odometry, self.odom_topic, self.odometry_callback, self.qos_depth)
+            Odometry, self.odom_topic, self.odometry_callback, qos_profile_sensor_data)
 
         self.pose_sub = self.create_subscription(
             PoseWithCovarianceStamped, self.initialpose_topic, self.pose_estimate_callback, self.qos_depth)
