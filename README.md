@@ -2,66 +2,33 @@
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![ROS 2 Humble](https://img.shields.io/badge/ROS_2-Humble-blue.svg)](https://docs.ros.org/en/humble/)
+![MPC](https://img.shields.io/badge/MPC-R.svg)
+![LQR](https://img.shields.io/badge/LQR-R.svg)
 
-A ROS2 package for trajectory processing and publishing designed for F1TENTH autonomous racing applications. The Horizon Mapper processes optimal trajectories and provides predictive trajectory horizons for Model Predictive Control (MPC) systems.
+A ROS2 package for trajectory processing and horizon publishing built for F1TENTH racing. Horizon Mapper turns optimal trajectories into rolling reference horizons for optimal control loops (LQR, MPC, and beyond), so the controller can stay focused on the OCP instead of data plumbing.
 
-## Table of Contents
-
-- [Overview](#overview)
-- [Features](#features)
-- [Installation](#installation)
-- [Usage](#usage)
-- [Configuration](#configuration)
-- [Topics](#topics)
-- [Parameters](#parameters)
-- [Dependencies](#dependencies)
-- [Contributing](#contributing)
-- [License](#license)
-- [Acknowledgments](#acknowledgments)
-
-## Overview
-
-The Horizon Mapper is a crucial component in the F1TENTH autonomous racing stack that bridges the gap between global trajectory planning and local model predictive control. It processes optimal racing trajectories and publishes predictive trajectory horizons that enable real-time vehicle control.
+Think of it as the pit crew for your controller: it delivers clean, timely horizons so the OCP can focus on winning the lap.
 
 ### Key Capabilities
 
 - **Trajectory Processing**: Loads and preprocesses optimal racing trajectories from CSV files
-- **Predictive Horizons**: Generates rolling trajectory horizons for MPC controllers
-- **State Estimation**: Integrates vehicle odometry and pose estimates for accurate trajectory tracking
+- **Predictive Horizons**: Generates rolling trajectory horizons for LQR, MPC, and other optimal control policies
+- **State Estimation**: Integrates vehicle odometry and pose estimates for accurate reference tracking
 - **Real-time Publishing**: Provides continuous trajectory updates at configurable frequencies
 - **Validation**: Ensures trajectory data integrity with comprehensive validation checks
 
-## Features
-
-- ✅ **ROS2 Native**: Built for ROS2 Humble with modern Python practices
-- ✅ **Configurable Horizons**: Adjustable prediction horizon length and time steps
-- ✅ **Multi-source Localization**: Supports both odometry and RViz pose estimates
-- ✅ **Trajectory Validation**: Comprehensive data validation and error handling
-- ✅ **Real-time Performance**: Optimized for 10Hz+ control loops
-- ✅ **Visualization Support**: Publishes Path messages for RViz visualization
-- ✅ **Parameter Server Integration**: Full ROS2 parameter system support
-
 ## Installation
 
-### Prerequisites
-
-- ROS2 Humble
-- Python 3.8+
-- NumPy
-- tf_transformations
-
-### Build Instructions
 
 1. **Clone the repository** into your ROS2 workspace:
    ```bash
-   cd ~/ros2_ws/src
-   git clone https://github.com/your-username/horizon_mapper.git
+   git clone https://github.com/GIU-F1Tenth/horizon_mapper.git
    ```
 
 2. **Install dependencies**:
    ```bash
-   cd ~/ros2_ws
-   rosdep install --from-paths src --ignore-src -r -y
+   cd ~/horizon_mapper
+   pip install -r requirement.txt
    ```
 
 3. **Build the package**:
@@ -74,22 +41,7 @@ The Horizon Mapper is a crucial component in the F1TENTH autonomous racing stack
 
 ### Basic Launch
 
-Launch the Horizon Mapper with default parameters:
-
-```bash
-ros2 run horizon_mapper horizon_mapper_node
-```
-
-### Launch with Custom Parameters
-
-```bash
-ros2 run horizon_mapper horizon_mapper_node --ros-args \
-  -p horizon_N:=10 \
-  -p horizon_T:=0.5 \
-  -p enable_logging:=true
-```
-
-### Using Launch Files
+Launch the Horizon Mapper with config file parameters:
 
 ```bash
 ros2 launch horizon_mapper horizon_mapper.launch.py
@@ -97,7 +49,7 @@ ros2 launch horizon_mapper horizon_mapper.launch.py
 
 ### Integration Example
 
-The Horizon Mapper is typically used as part of a larger autonomous racing stack:
+The Horizon Mapper is used as part of a larger racing stack:
 
 ```bash
 # Launch the full stack (example)
@@ -110,18 +62,19 @@ ros2 launch race_stack autonomous_racing.launch.py \
 
 ### Trajectory Files
 
-The package expects trajectory files in CSV format with the following columns:
+The HM expects trajectory files in CSV format with the following columns:
 
 ```csv
-x,y,v,theta
-0.0,0.0,1.0,0.0
-1.0,0.1,1.2,0.05
+# x,y,v
+2.0,4.0,1.0
+2.2,5.1,1.6
+2.4,4.2,2.3
 ...
 ```
-
 - `x`, `y`: Position coordinates (meters)
 - `v`: Velocity (m/s)
-- `theta`: Heading angle (radians)
+
+The HM produces x,y,v,theta,delta,kappa based on the Bicycle-model.
 
 ### Configuration File
 
@@ -151,23 +104,9 @@ horizon_mapper:
 
 | Topic | Type | Description |
 |-------|------|-------------|
-| `/horizon_mapper/reference_trajectory` | `giu_f1t_interfaces/VehicleStateArray` | Predictive trajectory horizon for MPC |
+| `/horizon_mapper/reference_trajectory` | `giu_f1t_interfaces/VehicleStateArray` | Predictive trajectory horizon for LQR/MPC |
 | `/horizon_mapper/reference_path` | `nav_msgs/Path` | Full reference path for visualization |
 | `/horizon_mapper/path_ready` | `std_msgs/Bool` | Status indicator for trajectory readiness |
-
-## Parameters
-
-| Parameter | Type | Default | Description |
-|-----------|------|---------|-------------|
-| `enable_logging` | bool | `false` | Enable detailed logging output |
-| `optimal_trajectory_path` | string | Auto-detected | Path to input trajectory CSV file |
-| `reference_trajectory_path` | string | Auto-detected | Path to processed trajectory CSV file |
-| `horizon_N` | int | `8` | Number of prediction horizon steps |
-| `horizon_T` | double | `0.5` | Time step for prediction horizon |
-| `wheelbase` | double | `0.33` | Vehicle wheelbase length |
-| `max_steering_angle` | double | `0.5` | Maximum steering angle limit |
-| `min_speed` | double | `0.1` | Minimum vehicle speed |
-| `odom_topic` | string | `"car_state/odom"` | Odometry topic name |
 
 ## Dependencies
 
@@ -188,8 +127,8 @@ horizon_mapper:
 
 ```
 ┌─────────────────┐    ┌─────────────────┐    ┌─────────────────┐
-│   Odometry      │───▶│  Horizon        │───▶│   MPC           │
-│   /car_state/   │    │  Mapper         │    │   Controller    │
+│   Odometry      │───▶│  Horizon        │───▶│   Controller    │
+│   /car_state/   │    │  Mapper         │    │  (LQR / MPC)    │
 │   odom          │    │                 │    │                 │
 └─────────────────┘    │  ┌───────────┐  │    └─────────────────┘
                        │  │Trajectory │  │
@@ -233,7 +172,7 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 
 ## Acknowledgments
 
-- **F1TENTH Community**: For the autonomous racing platform and ecosystem
+- **F1TENTH Community**: For the racing platform and ecosystem
 - **ROS2 Team**: For the excellent robotics middleware
 - **ETH Zurich PBL**: For the ForzaETH race stack inspiration
 - **Contributors**: Thanks to all who have contributed to this project
@@ -245,18 +184,11 @@ If you use this package in your research, please cite:
 ```bibtex
 @software{horizon_mapper_2025,
   title={Horizon Mapper: Trajectory Processing for F1TENTH Autonomous Racing},
-  author={Mohammed Azab},
+  author={Mohammed Abdelazim},
   year={2025},
-  url={https://github.com/your-username/horizon_mapper}
+  url={https://github.com/GIU-F1Tenth/horizon_mapper}
 }
 ```
-
-## Support
-
-- **Issues**: Report bugs and request features via [GitHub Issues](https://github.com/your-username/horizon_mapper/issues)
-- **Discussions**: Join the conversation in [GitHub Discussions](https://github.com/your-username/horizon_mapper/discussions)
-- **Email**: For direct support, contact mo7ammed3zab@outlook.com
-
 ---
 
 **Happy Racing! 🏁**
