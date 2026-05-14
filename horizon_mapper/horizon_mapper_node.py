@@ -187,8 +187,6 @@ class HorizonMapperNode(Node):
                                ParameterDescriptor(description='Map frame ID'))
         self.declare_parameter('qos_depth', 10,
                                ParameterDescriptor(description='QoS queue depth for topics'))
-        self.declare_parameter('car_viz_topic', '/horizon_mapper/car_visualization',
-                               ParameterDescriptor(description='Topic for lookahead circle and direction arrow visualization'))
         self.declare_parameter('reverse_direction', False,
                                ParameterDescriptor(description='If true, traverse the trajectory in reverse (counter-direction)'))
 
@@ -198,11 +196,6 @@ class HorizonMapperNode(Node):
                                    description='Total driveable track width [m]. '
                                                'When > 0 overrides default_left_bound and default_right_bound '
                                                '(sets each to track_width / 2). Use 0 to keep manual bounds.'))
-        self.declare_parameter('viz_lookahead_steps', 0,
-                               ParameterDescriptor(
-                                   description='Number of trajectory steps ahead for the direction arrow. '
-                                               '0 = auto (horizon_N // 4, min 5).'))
-
         # CSV path source parameters
         self.declare_parameter('use_csv_path', default_config.use_csv_path,
                                ParameterDescriptor(description='If true, load trajectory from CSV file instead of subscribing to path topic'))
@@ -248,7 +241,6 @@ class HorizonMapperNode(Node):
         self.velocity_color_scale = self.get_parameter('velocity_color_scale').value
         self.map_frame = self.get_parameter('map_frame').value
         self.qos_depth = self.get_parameter('qos_depth').value
-        self.car_viz_topic = self.get_parameter('car_viz_topic').value
         self.reverse_direction = self.get_parameter('reverse_direction').value
 
         # Adaptive track geometry
@@ -257,9 +249,6 @@ class HorizonMapperNode(Node):
             half = track_width / 2.0
             self.default_left_bound = half
             self.default_right_bound = half
-
-        viz_steps_param = self.get_parameter('viz_lookahead_steps').value
-        self.viz_lookahead_steps = viz_steps_param if viz_steps_param > 0 else max(5, self.horizon // 4)
 
         # CSV path source parameters
         self.use_csv_path = self.get_parameter('use_csv_path').value
@@ -292,10 +281,6 @@ class HorizonMapperNode(Node):
         # Visualization and constraint state variables
         if self.publish_visualization:
             self.trajectory_points = []
-            self.current_pose = None
-            self.current_velocity = 0.0
-            self.current_heading = 0.0
-
             # Bound adjustments
             self.left_bound_adjustment = 0.0
             self.right_bound_adjustment = 0.0
@@ -724,12 +709,6 @@ class HorizonMapperNode(Node):
             self.current_vehicle_state.theta = yaw
 
             self.current_vehicle_state.delta = 0.0
-
-            # Update visualization state
-            if self.publish_visualization:
-                self.current_pose = msg.pose.pose
-                self.current_velocity = self.current_vehicle_state.v
-                self.current_heading = self.current_vehicle_state.theta
 
             self.log_debug(f"Odometry update: x={self.current_vehicle_state.x:.2f}, "
                            f"y={self.current_vehicle_state.y:.2f}, "

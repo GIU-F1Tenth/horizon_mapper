@@ -42,7 +42,6 @@ class HorizonMapperViz:
         self._constraint_status_pub = None
         self._corridor_viz_pub = None
         self._velocity_path_pub = None
-        self._car_viz_pub = None
 
     def create_publishers(self):
         n = self._node
@@ -54,8 +53,6 @@ class HorizonMapperViz:
             MarkerArray, n.corridor_viz_topic, n.qos_depth)
         self._velocity_path_pub = n.create_publisher(
             MarkerArray, n.velocity_viz_topic, n.qos_depth)
-        self._car_viz_pub = n.create_publisher(
-            MarkerArray, n.car_viz_topic, n.qos_depth)
 
     def publish_constrained_trajectory(self):
         n = self._node
@@ -112,7 +109,6 @@ class HorizonMapperViz:
 
         self._publish_corridor_visualization()
         self._publish_velocity_visualization()
-        self._publish_car_visualization()
 
     def _find_closest_point_index(self) -> int:
         return self._node.find_closest_trajectory_point()
@@ -201,86 +197,6 @@ class HorizonMapperViz:
         )
 
         self._constraint_status_pub.publish(status_msg)
-
-    def _publish_car_visualization(self):
-        n = self._node
-        if not n.current_pose:
-            return
-        if not n.path_ready or len(n.trajectory_points) == 0:
-            return
-
-        marker_array = MarkerArray()
-        stamp = n.get_clock().now().to_msg()
-
-        car_x = n.current_vehicle_state.x
-        car_y = n.current_vehicle_state.y
-
-        def get_value(pt, key):
-            return pt[key] if isinstance(pt, dict) else getattr(pt, key)
-
-        closest_idx = self._find_closest_point_index()
-        n_points = len(n.trajectory_points)
-        step_sign = -1 if n.reverse_direction else 1
-        target_idx = (closest_idx + step_sign * n.viz_lookahead_steps) % n_points
-        target_pt = n.trajectory_points[target_idx]
-
-        tx = get_value(target_pt, 'x')
-        ty = get_value(target_pt, 'y')
-        lookahead_dist = math.sqrt((tx - car_x) ** 2 + (ty - car_y) ** 2)
-
-        circle_marker = Marker()
-        circle_marker.header.stamp = stamp
-        circle_marker.header.frame_id = n.map_frame
-        circle_marker.ns = "lookahead_circle"
-        circle_marker.id = 0
-        circle_marker.type = Marker.LINE_STRIP
-        circle_marker.action = Marker.ADD
-        circle_marker.pose.orientation.w = 1.0
-        circle_marker.scale.x = 0.03
-        circle_marker.color.r = 0.0
-        circle_marker.color.g = 1.0
-        circle_marker.color.b = 1.0
-        circle_marker.color.a = 0.8
-
-        num_segments = 48
-        for j in range(num_segments + 1):
-            angle = 2.0 * math.pi * j / num_segments
-            pt = Point()
-            pt.x = car_x + lookahead_dist * math.cos(angle)
-            pt.y = car_y + lookahead_dist * math.sin(angle)
-            pt.z = 0.05
-            circle_marker.points.append(pt)
-        marker_array.markers.append(circle_marker)
-
-        direction_marker = Marker()
-        direction_marker.header.stamp = stamp
-        direction_marker.header.frame_id = n.map_frame
-        direction_marker.ns = "direction_arrow"
-        direction_marker.id = 0
-        direction_marker.type = Marker.ARROW
-        direction_marker.action = Marker.ADD
-
-        start_pt = Point()
-        start_pt.x = car_x
-        start_pt.y = car_y
-        start_pt.z = 0.2
-
-        end_pt = Point()
-        end_pt.x = tx
-        end_pt.y = ty
-        end_pt.z = 0.2
-
-        direction_marker.points = [start_pt, end_pt]
-        direction_marker.scale.x = 0.05
-        direction_marker.scale.y = 0.12
-        direction_marker.scale.z = 0.15
-        direction_marker.color.r = 1.0
-        direction_marker.color.g = 0.5
-        direction_marker.color.b = 0.0
-        direction_marker.color.a = 1.0
-        marker_array.markers.append(direction_marker)
-
-        self._car_viz_pub.publish(marker_array)
 
     def _publish_corridor_visualization(self):
         n = self._node

@@ -42,7 +42,7 @@ horizon_mapper_node:
     qos_depth: 10
 
     # Traversal direction — set to true to run the trajectory in reverse
-    reverse_direction: false
+    reverse_direction: true
 
     # ── Adaptive track geometry ─────────────────────────────────────────────
     # Set track_width to the total driveable width of your map in metres.
@@ -68,7 +68,7 @@ horizon_mapper_node:
 
     # ── Visualization ────────────────────────────────────────────────────────
     publish_visualization: true
-    corridor_viz_topic: "/horizon_mapper/corridor_visualization"
-    velocity_viz_topic: "/horizon_mapper/velocity_path"
-    velocity_color_scale: 10.0
+    corridor_viz_topic: "/horizon_mapper/corridor_viz"
+    velocity_viz_topic: "/horizon_mapper/vel_mapping"
+    velocity_color_scale: 5.0
     map_frame: "map"
