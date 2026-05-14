@@ -1,9 +1,7 @@
 from nav_msgs.msg import Path, Odometry
 from geometry_msgs.msg import PoseStamped, PoseWithCovarianceStamped
-from std_msgs.msg import Bool, Header
-from tf2_ros import Buffer, TransformListener
+from std_msgs.msg import Bool, Int16
 from std_srvs.srv import Trigger
-from std_msgs.msg import Int16
 from giu_f1t_interfaces.msg import (
     VehicleState,
     VehicleStateArray,
@@ -13,18 +11,20 @@ from sensor_msgs.msg import LaserScan
 from .preprocess_trajectory import preprocess_trajectory
 import rclpy
 from rclpy.node import Node
-from rclpy.parameter import Parameter
-from rclpy.qos import QoSProfile, ReliabilityPolicy, DurabilityPolicy, HistoryPolicy, qos_profile_sensor_data
-from rcl_interfaces.msg import ParameterDescriptor, ParameterType
+from rclpy.qos import qos_profile_sensor_data
+from rcl_interfaces.msg import ParameterDescriptor
 import csv
 import math
 import numpy as np
-import colorsys
 import os
-from typing import List, Tuple, Optional
+from typing import List
+
+from .logger_utils import HMLogger
+
 try:
-    from tf_transformations import euler_from_quaternion, quaternion_from_euler
+    from tf_transformations import euler_from_quaternion
 except ImportError:
+    rclpy.logging.get_logger('horizon_mapper').warn('Couldn\'t find' 'tf_transformations. Using fallback quaternion conversion.')
     def euler_from_quaternion(quat):
         """Fallback conversion: quaternion [x, y, z, w] -> roll, pitch, yaw."""
         x, y, z, w = quat
@@ -100,15 +100,13 @@ class HorizonMapperNode(Node):
         self._declare_parameters()
         self._load_parameters()
 
+        self._log = HMLogger(self, "HorizonMapper")
+        self._log.set_level("debug" if self.enable_debugging else "normal")
+
         self._viz = HorizonMapperViz(self) if self.publish_visualization else None
 
         # Initialize state variables
         self._initialize_state_variables()
-
-        # Initialize TF2 for visualization
-        if self.publish_visualization:
-            self.tf_buffer = Buffer()
-            self.tf_listener = TransformListener(self.tf_buffer, self)
 
         # Create subscribers
         self._create_subscribers()
@@ -123,9 +121,9 @@ class HorizonMapperNode(Node):
         self.override_service = self.create_service(Trigger, '/horizon_mapper/override_path', self._override_service_cb)
 
         if self.use_csv_path:
-            self.get_logger().info("Horizon Mapper Node initialized - path source: CSV file")
+            self._log.info("Horizon Mapper Node initialized - path source: CSV file")
         else:
-            self.get_logger().info(f"Horizon Mapper Node initialized - waiting for {self.path_topic} topic")
+            self._log.info(f"Horizon Mapper Node initialized - waiting for {self.path_topic} topic")
 
     def _declare_parameters(self):
         """Declare all ROS2 parameters with descriptions"""
@@ -321,14 +319,14 @@ class HorizonMapperNode(Node):
             self.bound_adjustment_sub = self.create_subscription(
                 BoundAdjustment, self.bound_adjustment_topic, self._bound_adjustment_callback, self.qos_depth)
         
-        self.get_logger().info(f"Subscribed to topics:")
+        self._log.info("Subscribed to topics:")
         if not self.use_csv_path:
-            self.get_logger().info(f"  - Reference path: {self.path_topic}")
+            self._log.info(f"  - Reference path: {self.path_topic}")
         else:
-            self.get_logger().info(f"  - Reference path: CSV file ({self.csv_input_path})")
-        self.get_logger().info(f"  - Left boundary: {self.left_boundary_topic}")
-        self.get_logger().info(f"  - Right boundary: {self.right_boundary_topic}")
-        self.get_logger().info(f"  - Odometry: {self.odom_topic}")
+            self._log.info(f"  - Reference path: CSV file ({self.csv_input_path})")
+        self._log.info(f"  - Left boundary: {self.left_boundary_topic}")
+        self._log.info(f"  - Right boundary: {self.right_boundary_topic}")
+        self._log.info(f"  - Odometry: {self.odom_topic}")
 
     def _lidar_callback(self, msg):
         """Store latest LIDAR scan"""
@@ -338,10 +336,10 @@ class HorizonMapperNode(Node):
         """Callback to process incoming Path message and convert to reference trajectory"""
         try:
             if len(msg.poses) == 0:
-                self.get_logger().warn("Received empty path message")
+                self._log.warn("Received empty path message")
                 return
             
-            self.get_logger().info(f"Received path with {len(msg.poses)} poses")
+            self._log.info(f"Received path with {len(msg.poses)} poses")
             
             # Convert Path message to reference trajectory format
             new_trajectory = []
@@ -394,17 +392,17 @@ class HorizonMapperNode(Node):
             
             self.path_ready = True
             boundary_status = 'received' if self.use_received_bounds else 'adaptive'
-            self.get_logger().info(f"Updated reference trajectory: {len(self.reference_trajectory)} points, "
-                                  f"boundaries: {boundary_status}")
+            self._log.info(f"Updated reference trajectory: {len(self.reference_trajectory)} points, "
+                           f"boundaries: {boundary_status}")
             
         except Exception as e:
-            self.get_logger().error(f"Error processing path message: {e}")
+            self._log.error("Error processing path message", exception=e)
     
     def _left_boundary_callback(self, msg: Path):
         """Callback for left boundary path"""
         try:
             if len(msg.poses) == 0:
-                self.get_logger().warn("Received empty left boundary path")
+                self._log.warn("Received empty left boundary path")
                 return
             
             # Extract lateral distances from boundary path
@@ -437,17 +435,17 @@ class HorizonMapperNode(Node):
                         # Fallback for mismatched lengths
                         self.received_left_bounds.append(self.default_left_bound)
             
-            self.get_logger().info(f"Received left boundary: {len(self.received_left_bounds)} points")
+            self._log.info(f"Received left boundary: {len(self.received_left_bounds)} points")
             self._validate_boundaries()
             
         except Exception as e:
-            self.get_logger().error(f"Error processing left boundary: {e}")
+            self._log.error("Error processing left boundary", exception=e)
     
     def _right_boundary_callback(self, msg: Path):
         """Callback for right boundary path"""
         try:
             if len(msg.poses) == 0:
-                self.get_logger().warn("Received empty right boundary path")
+                self._log.warn("Received empty right boundary path")
                 return
             
             # Extract lateral distances from boundary path
@@ -480,11 +478,11 @@ class HorizonMapperNode(Node):
                         # Fallback for mismatched lengths
                         self.received_right_bounds.append(self.default_right_bound)
             
-            self.get_logger().info(f"Received right boundary: {len(self.received_right_bounds)} points")
+            self._log.info(f"Received right boundary: {len(self.received_right_bounds)} points")
             self._validate_boundaries()
             
         except Exception as e:
-            self.get_logger().error(f"Error processing right boundary: {e}")
+            self._log.error("Error processing right boundary", exception=e)
     
     def _validate_boundaries(self):
         """Validate that trajectory and boundaries have matching lengths"""
@@ -498,31 +496,29 @@ class HorizonMapperNode(Node):
         
         if left_len == traj_len and right_len == traj_len:
             self.use_received_bounds = True
-            self.get_logger().info(f"Boundaries validated: {traj_len} points match")
+            self._log.info(f"Boundaries validated: {traj_len} points match")
         elif left_len > 0 or right_len > 0:
             self.use_received_bounds = False
-            self.get_logger().warn(f"Boundary length mismatch - trajectory: {traj_len}, "
-                                  f"left: {left_len}, right: {right_len}. Using adaptive bounds.")
+            self._log.warn(f"Boundary length mismatch - trajectory: {traj_len}, "
+                           f"left: {left_len}, right: {right_len}. Using adaptive bounds.")
         else:
             self.use_received_bounds = False
 
     def preprocess_and_load_trajectory(self):
         """Run preprocessing on CSV file and load trajectory (used when use_csv_path=true)"""
         if not self.csv_input_path or not self.csv_output_path:
-            self.get_logger().error("use_csv_path is true but csv_input_path or csv_output_path is not set")
+            self._log.error("use_csv_path is true but csv_input_path or csv_output_path is not set")
             return
 
         if not os.path.isfile(self.csv_input_path):
-            self.get_logger().warn(
-                f"CSV input not found yet: {self.csv_input_path}. Waiting for file generation..."
-            )
+            self._log.warn(f"CSV input not found yet: {self.csv_input_path}. Waiting for file generation...")
             if self.csv_retry_timer is None:
                 self.csv_retry_timer = self.create_timer(1.0, self._retry_csv_load)
             self.path_ready = False
             return
 
         try:
-            self.log_info(f"Loading trajectory from CSV: {self.csv_input_path}")
+            self._log.info(f"Loading trajectory from CSV: {self.csv_input_path}")
             success = preprocess_trajectory(
                 self.csv_input_path,
                 self.csv_output_path,
@@ -534,7 +530,7 @@ class HorizonMapperNode(Node):
             if success:
                 self.reference_trajectory = self._load_trajectory_from_csv(self.csv_output_path)
                 self.path_ready = len(self.reference_trajectory) > 0
-                self.log_info(f"CSV trajectory loaded: {len(self.reference_trajectory)} points")
+                self._log.info(f"CSV trajectory loaded: {len(self.reference_trajectory)} points")
                 if self.csv_retry_timer is not None:
                     self.csv_retry_timer.cancel()
                     self.csv_retry_timer = None
@@ -544,11 +540,11 @@ class HorizonMapperNode(Node):
                         for s in self.reference_trajectory
                     ]
             else:
-                self.get_logger().error("CSV preprocessing failed")
+                self._log.error("CSV preprocessing failed")
                 self.path_ready = False
 
         except Exception as e:
-            self.get_logger().error(f"Error loading CSV trajectory: {e}")
+            self._log.error("Error loading CSV trajectory", exception=e)
             self.path_ready = False
 
     def _resolve_csv_path(self, path, prefer_output=False):
@@ -635,11 +631,11 @@ class HorizonMapperNode(Node):
             valid_points = [s for s in data if self._validate_vehicle_state(s)]
             removed = len(data) - len(valid_points)
             if removed > 0:
-                self.get_logger().warn(f"Removed {removed} invalid trajectory points from CSV")
+                self._log.warn(f"Removed {removed} invalid trajectory points from CSV")
             return valid_points
 
         except Exception as e:
-            self.get_logger().error(f"Failed to load CSV trajectory: {e}")
+            self._log.error("Failed to load CSV trajectory", exception=e)
             return data
 
     def _create_publishers(self):
@@ -669,12 +665,12 @@ class HorizonMapperNode(Node):
     def log_info(self, message):
         """Log info messages only if logging is enabled"""
         if self.enable_logging:
-            self.get_logger().info(message)
+            self._log.info(message)
 
     def log_debug(self, message):
         """Log debug messages only if logging is enabled"""
         if self.enable_debugging:
-            self.get_logger().debug(message)
+            self._log.debug(message)
 
     def horizon_callback(self, msg):
         """Update current horizon_N variable from dynamic topic"""
@@ -682,11 +678,11 @@ class HorizonMapperNode(Node):
             new_horizon = int(msg.data)
             if new_horizon > 0:
                 self.horizon = new_horizon
-                self.get_logger().info(f"Dynamic horizon_N updated to {self.horizon}")
+                self._log.info(f"Dynamic horizon_N updated to {self.horizon}")
             else:
-                self.get_logger().warn(f"Ignored invalid horizon_N value: {new_horizon}")
+                self._log.warn(f"Ignored invalid horizon_N value: {new_horizon}")
         except Exception as e:
-            self.get_logger().error(f"Error updating horizon_N: {e}")
+            self._log.error("Error updating horizon_N", exception=e)
 
     def odometry_callback(self, msg):
         """Update current vehicle state from odometry"""
@@ -710,13 +706,13 @@ class HorizonMapperNode(Node):
 
             self.current_vehicle_state.delta = 0.0
 
-            self.log_debug(f"Odometry update: x={self.current_vehicle_state.x:.2f}, "
+            self._log.debug(f"Odometry update: x={self.current_vehicle_state.x:.2f}, "
                            f"y={self.current_vehicle_state.y:.2f}, "
                            f"v={self.current_vehicle_state.v:.2f}, "
                            f"theta={self.current_vehicle_state.theta:.2f}")
 
         except Exception as e:
-            self.get_logger().error(f"Error processing odometry: {str(e)}")
+            self._log.error("Error processing odometry", exception=e)
 
     def pose_estimate_callback(self, msg):
         """Update pose estimate from RViz 2D Pose Estimate tool"""
@@ -736,12 +732,12 @@ class HorizonMapperNode(Node):
             # Set the theta (heading angle) - this is critical for MPC!
             self.current_vehicle_state.theta = yaw
 
-            self.log_info(f"Pose estimate from RViz: x={self.current_vehicle_state.x:.2f}, "
+            self._log.event(f"Pose estimate from RViz: x={self.current_vehicle_state.x:.2f}, "
                           f"y={self.current_vehicle_state.y:.2f}, "
                           f"theta={self.current_vehicle_state.theta:.2f}")
 
         except Exception as e:
-            self.get_logger().error(f"Error processing pose estimate: {str(e)}")
+            self._log.error("Error processing pose estimate", exception=e)
 
     def _override_service_cb(self, request, response):
         """Service callback to reset trajectory state.
@@ -750,11 +746,11 @@ class HorizonMapperNode(Node):
         """
         try:
             self.trajectory_index = 0
-            self.get_logger().info("Trajectory state reset via service call")
+            self._log.info("Trajectory state reset via service call")
             response.success = True
             response.message = "Trajectory state reset"
         except Exception as e:
-            self.get_logger().error(f"Error resetting trajectory: {e}")
+            self._log.error("Error resetting trajectory", exception=e)
             response.success = False
             response.message = str(e)
         return response
@@ -809,14 +805,18 @@ class HorizonMapperNode(Node):
         """Create predictive trajectory horizon starting from closest reference point"""
         try:
             if not self.reference_trajectory:
-                self.get_logger().warn("No reference trajectory available")
+                self._log.warn("No reference trajectory available")
                 return VehicleStateArray()
 
             # Validate current vehicle state before using it
             if not self._validate_vehicle_state(self.current_vehicle_state):
-                self.get_logger().error(f"Current vehicle state contains invalid values: "
-                                        f"x={self.current_vehicle_state.x}, y={self.current_vehicle_state.y}, "
-                                        f"v={self.current_vehicle_state.v}, theta={self.current_vehicle_state.theta}")
+                self._log.error(
+                    "Current vehicle state contains invalid values",
+                    exception=ValueError(
+                        f"x={self.current_vehicle_state.x}, y={self.current_vehicle_state.y}, "
+                        f"v={self.current_vehicle_state.v}, theta={self.current_vehicle_state.theta}"
+                    ),
+                )
                 return VehicleStateArray()
 
             # Find closest point on reference trajectory
@@ -833,7 +833,7 @@ class HorizonMapperNode(Node):
 
                 # Skip individual invalid points rather than aborting the entire horizon
                 if not self._validate_vehicle_state(ref_point):
-                    self.get_logger().warn(
+                    self._log.warn(
                         f"Skipping invalid reference point {ref_index}: "
                         f"x={ref_point.x}, y={ref_point.y}, v={ref_point.v}, theta={ref_point.theta}")
                     continue
@@ -851,9 +851,9 @@ class HorizonMapperNode(Node):
             return trajectory_msg
 
         except Exception as e:
-            self.get_logger().error(f"Error creating predictive trajectory: {e}")
+            self._log.error("Error creating predictive trajectory", exception=e)
             import traceback
-            self.get_logger().error(f"Traceback: {traceback.format_exc()}")
+            self._log.debug(f"Traceback: {traceback.format_exc()}")
             return VehicleStateArray()
 
     def _validate_vehicle_state(self, state):
@@ -878,7 +878,7 @@ class HorizonMapperNode(Node):
             return True
 
         except Exception as e:
-            self.get_logger().error(f"Error validating vehicle state: {e}")
+            self._log.error("Error validating vehicle state", exception=e)
             return False
 
     def create_path_msg(self):
@@ -899,54 +899,6 @@ class HorizonMapperNode(Node):
 
         return path_msg
 
-    def publish_predictive_trajectory(self):
-        """Publish predictive trajectory for MPC and status"""
-        # Always publish status
-        status_msg = Bool()
-        status_msg.data = self.path_ready
-        self.status_pub.publish(status_msg)
-
-        # Only publish trajectory data if ready and we have current state
-        if self.path_ready and len(self.reference_trajectory) > 0:
-            # Publish full reference path for RViz (less frequent)
-            if self.get_clock().now().nanoseconds % 1000000000 < 100000000:  # ~10% of the time
-                path_msg = self.create_path_msg()
-                self.path_pub.publish(path_msg)
-                self.log_debug("Published reference path for RViz visualization")
-
-            # Always publish predictive trajectory for MPC
-            trajectory_msg = self.create_predictive_trajectory()
-            if len(trajectory_msg.states) > 0:
-                # Double-check that all states in the trajectory are valid
-                valid_trajectory = True
-                for i, state in enumerate(trajectory_msg.states):
-                    if not self._validate_vehicle_state(state):
-                        self.get_logger().error(f"Invalid state at index {i} in trajectory, not publishing")
-                        valid_trajectory = False
-                        break
-
-                if valid_trajectory:
-                    self.trajectory_pub.publish(trajectory_msg)
-                    self.log_debug(
-                        f"Published valid predictive trajectory: {len(trajectory_msg.states)} points, "
-                        f"current pos: ({self.current_vehicle_state.x:.2f}, {self.current_vehicle_state.y:.2f}), "
-                        f"current theta: {self.current_vehicle_state.theta:.2f}, "
-                        f"closest ref idx: {self.find_closest_trajectory_point()}")
-
-                    # Debug: Log first few trajectory points being sent to MPC
-                    if self.enable_logging and len(trajectory_msg.states) > 0:
-                        self.log_debug("Sample trajectory states sent to MPC:")
-                        for i in range(min(3, len(trajectory_msg.states))):
-                            state = trajectory_msg.states[i]
-                            self.log_debug(
-                                f"  State {i}: x={state.x:.2f}, y={state.y:.2f}, v={state.v:.2f}, theta={state.theta:.2f}")
-                else:
-                    self.get_logger().warn("Skipping trajectory publication due to invalid states")
-            else:
-                self.get_logger().warn("Empty trajectory created, not publishing")
-
-    # Visualization and constraint methods
-
     def _bound_adjustment_callback(self, msg: BoundAdjustment):
         """Handle bound adjustment messages"""
         if not self.publish_visualization or not self.adaptive_bounds:
@@ -956,16 +908,16 @@ class HorizonMapperNode(Node):
             self.left_bound_adjustment = 0.0
             self.right_bound_adjustment = 0.0
             self.confidence_adjustment = 0.0
-            self.get_logger().info("Reset bound adjustments to default")
+            self._log.info("Reset bound adjustments to default")
         else:
             self.left_bound_adjustment = msg.left_bound_adjustment
             self.right_bound_adjustment = msg.right_bound_adjustment
             self.confidence_adjustment = msg.confidence_adjustment
 
-            self.get_logger().info(f"Updated bound adjustments: "
-                                   f"left={self.left_bound_adjustment:.3f}, "
-                                   f"right={self.right_bound_adjustment:.3f}, "
-                                   f"confidence={self.confidence_adjustment:.3f}")
+            self._log.info(f"Updated bound adjustments: "
+                           f"left={self.left_bound_adjustment:.3f}, "
+                           f"right={self.right_bound_adjustment:.3f}, "
+                           f"confidence={self.confidence_adjustment:.3f}")
 
 
     def publish_predictive_trajectory(self):
@@ -990,7 +942,7 @@ class HorizonMapperNode(Node):
             if self.get_clock().now().nanoseconds % 1000000000 < 100000000:  # ~10% of the time
                 path_msg = self.create_path_msg()
                 self.path_pub.publish(path_msg)
-                self.log_debug("Published reference path for RViz visualization")
+                self._log.debug("Published reference path for RViz visualization")
 
             # Always publish predictive trajectory for MPC
             trajectory_msg = self.create_predictive_trajectory()
@@ -999,13 +951,13 @@ class HorizonMapperNode(Node):
                 valid_trajectory = True
                 for i, state in enumerate(trajectory_msg.states):
                     if not self._validate_vehicle_state(state):
-                        self.get_logger().error(f"Invalid state at index {i} in trajectory, not publishing")
+                        self._log.error(f"Invalid state at index {i} in trajectory, not publishing")
                         valid_trajectory = False
                         break
 
                 if valid_trajectory:
                     self.trajectory_pub.publish(trajectory_msg)
-                    self.log_debug(
+                    self._log.debug(
                         f"Published valid predictive trajectory: {len(trajectory_msg.states)} points, "
                         f"current pos: ({self.current_vehicle_state.x:.2f}, {self.current_vehicle_state.y:.2f}), "
                         f"current theta: {self.current_vehicle_state.theta:.2f}, "
@@ -1013,20 +965,20 @@ class HorizonMapperNode(Node):
 
                     # Debug: Log first few trajectory points being sent to MPC
                     if self.enable_logging and len(trajectory_msg.states) > 0:
-                        self.log_debug("Sample trajectory states sent to MPC:")
+                        self._log.debug("Sample trajectory states sent to MPC:")
                         for i in range(min(3, len(trajectory_msg.states))):
                             state = trajectory_msg.states[i]
-                            self.log_debug(
+                            self._log.debug(
                                 f"  State {i}: x={state.x:.2f}, y={state.y:.2f}, v={state.v:.2f}, theta={state.theta:.2f}")
                 else:
-                    self.get_logger().warn("Skipping trajectory publication due to invalid states")
+                    self._log.warn("Skipping trajectory publication due to invalid states")
             else:
-                self.get_logger().warn("Empty trajectory created, not publishing")
+                self._log.warn("Empty trajectory created, not publishing")
         else:
             if not self.path_ready:
-                self.log_debug("Path not ready, not publishing trajectory")
+                self._log.debug("Path not ready, not publishing trajectory")
             if len(self.reference_trajectory) == 0:
-                self.log_debug("No reference trajectory loaded, not publishing")
+                self._log.debug("No reference trajectory loaded, not publishing")
 
 
 def main(args=None):
@@ -1036,7 +988,7 @@ def main(args=None):
     try:
         rclpy.spin(node)
     except KeyboardInterrupt:
-        node.log_info("Horizon Mapper node shutting down...")
+        node._log.shutdown("Horizon Mapper node shutting down...")
     finally:
         node.destroy_node()
         rclpy.shutdown()
