@@ -19,6 +19,25 @@ import yaml
 import argparse
 import sys
 
+import rclpy
+from .logger_utils import HMLogger
+from .params import (
+    DEFAULT_WHEELBASE,
+    DEFAULT_MAX_STEER,
+    DEFAULT_MIN_SPEED,
+    DEFAULT_MAX_DELTA_STEP,
+    DEFAULT_MAX_SPEED_STEP,
+)
+
+
+def _get_logger():
+    """Create a HMLogger-compatible logger for CLI usage."""
+    class _LoggerShim:
+        def get_logger(self):
+            return rclpy.logging.get_logger('horizon_mapper_preprocess')
+
+    return HMLogger(_LoggerShim(), "Preprocess")
+
 
 # ── geometry helpers ─────────────────────────────────────────────────────────
 
@@ -34,7 +53,13 @@ def _angle_diff(a: float, b: float) -> float:
 
 # ── core processing ──────────────────────────────────────────────────────────
 
-def process_csv(input_path, output_path, wheelbase=0.33, max_steering=0.5, min_velocity=0.1):
+def process_csv(
+    input_path,
+    output_path,
+    wheelbase=DEFAULT_WHEELBASE,
+    max_steering=DEFAULT_MAX_STEER,
+    min_velocity=DEFAULT_MIN_SPEED,
+):
     """Process a raw trajectory CSV and write a kinematically-enriched CSV.
 
     Input formats accepted (header comment lines '#' are skipped):
@@ -51,6 +76,7 @@ def process_csv(input_path, output_path, wheelbase=0.33, max_steering=0.5, min_v
          lateral acceleration stays within the kinematic feasibility limit:
            v_adj = v * (kappa_max / |kappa|)  where kappa_max = tan(max_steer)/L
     """
+    log = _get_logger()
     try:
         with open(input_path, 'r') as infile:
             sample = infile.readline()
@@ -139,14 +165,15 @@ def process_csv(input_path, output_path, wheelbase=0.33, max_steering=0.5, min_v
                 writer.writerow(row)
 
         adjusted = sum(1 for p in processed if abs(p['delta']) >= max_steering)
-        print(f"[✓] Processed {N} points  |  wheelbase={wheelbase} m  "
-              f"max_steer={math.degrees(max_steering):.1f}°  "
-              f"velocity-adjusted={adjusted} points")
-        print(f"[✓] Output → {output_path}")
+        log.success(
+            f"Processed {N} points | "
+            f"velocity_adjusted={adjusted} points"
+        )
+        log.info(f"Output -> {output_path}")
         return True
 
     except Exception as e:
-        print(f"[✗] Error processing trajectory: {e}")
+        log.error("Error processing trajectory", exception=e)
         return False
 
 
@@ -154,6 +181,7 @@ def process_csv(input_path, output_path, wheelbase=0.33, max_steering=0.5, min_v
 
 def load_ros2_params(config_path):
     """Load parameters from a ROS2 horizon_mapper.yaml file."""
+    log = _get_logger()
     try:
         with open(config_path, 'r') as f:
             config = yaml.safe_load(f)
@@ -171,7 +199,7 @@ def load_ros2_params(config_path):
             'horizon_N':           params.get('horizon_N', 10),
         }
     except Exception as e:
-        print(f"[✗] Error loading ROS2 config: {e}")
+        log.error("Error loading ROS2 config", exception=e)
         return {}
 
 
@@ -182,6 +210,123 @@ def find_config_file():
     path = os.path.abspath(candidate)
     return path if os.path.exists(path) else None
 
+def sanity_check(
+    file_path="optimal_trajectory.csv",
+    wheelbase=DEFAULT_WHEELBASE,
+    max_steering=DEFAULT_MAX_STEER,
+    min_velocity=DEFAULT_MIN_SPEED,
+    max_delta_step=DEFAULT_MAX_DELTA_STEP,
+    max_speed_step=DEFAULT_MAX_SPEED_STEP,
+):
+    """Sanity check a trajectory CSV for kinematic consistency.
+
+    Checks:
+      - finite values for x/y/v/theta/delta/kappa
+      - speed >= min_velocity
+      - |delta| <= max_steering
+      - kappa approximately matches delta (if both provided)
+      - no large per-step jumps in delta or speed
+    """
+    log = _get_logger()
+    log.info(f"Running sanity check: {file_path}")
+
+    if not os.path.isfile(file_path):
+        log.error("Sanity check failed: file not found", exception=FileNotFoundError(file_path))
+        return False
+
+    try:
+        with open(file_path, 'r') as infile:
+            reader = csv.DictReader(infile)
+            rows = list(reader)
+
+        if not rows:
+            log.error("Sanity check failed: CSV has no data rows")
+            return False
+
+        def get_float(row, key, default=None):
+            if key not in row or row[key] == "":
+                return default
+            return float(row[key])
+
+        issues = 0
+        prev_delta = None
+        prev_v = None
+
+        kappa_max = math.tan(max_steering) / wheelbase
+
+        for i, row in enumerate(rows):
+            x = get_float(row, 'x')
+            y = get_float(row, 'y')
+            v = get_float(row, 'v')
+            theta = get_float(row, 'theta', 0.0)
+            delta = get_float(row, 'delta')
+            kappa = get_float(row, 'kappa')
+
+            if x is None or y is None or v is None:
+                issues += 1
+                log.warn(f"Row {i}: missing required fields (x/y/v)")
+                continue
+
+            if not (math.isfinite(x) and math.isfinite(y) and math.isfinite(v) and math.isfinite(theta)):
+                issues += 1
+                log.warn(f"Row {i}: non-finite values")
+                continue
+
+            if v < min_velocity:
+                issues += 1
+                log.warn(f"Row {i}: v={v:.3f} below min_velocity={min_velocity:.3f}")
+
+            if delta is not None:
+                if not math.isfinite(delta):
+                    issues += 1
+                    log.warn(f"Row {i}: non-finite delta")
+                elif abs(delta) > max_steering + 1e-6:
+                    issues += 1
+                    log.warn(f"Row {i}: |delta|={abs(delta):.3f} exceeds max_steering={max_steering:.3f}")
+
+            if kappa is not None and not math.isfinite(kappa):
+                issues += 1
+                log.warn(f"Row {i}: non-finite kappa")
+
+            if delta is not None and kappa is not None:
+                kappa_from_delta = math.tan(delta) / wheelbase
+                if abs(kappa_from_delta - kappa) > max(0.05, 0.25 * abs(kappa)):
+                    issues += 1
+                    log.warn(
+                        f"Row {i}: kappa mismatch (kappa={kappa:.4f}, tan(delta)/L={kappa_from_delta:.4f})"
+                    )
+
+            if kappa is not None and abs(kappa) > kappa_max + 1e-6:
+                issues += 1
+                log.warn(f"Row {i}: |kappa|={abs(kappa):.4f} exceeds kappa_max={kappa_max:.4f}")
+
+            if prev_delta is not None and delta is not None:
+                if abs(delta - prev_delta) > max_delta_step:
+                    issues += 1
+                    log.warn(
+                        f"Row {i}: delta jump {abs(delta - prev_delta):.3f} rad exceeds {max_delta_step:.3f}"
+                    )
+            if prev_v is not None:
+                if abs(v - prev_v) > max_speed_step:
+                    issues += 1
+                    log.warn(
+                        f"Row {i}: speed jump {abs(v - prev_v):.3f} m/s exceeds {max_speed_step:.3f}"
+                    )
+
+            if delta is not None:
+                prev_delta = delta
+            prev_v = v
+
+        if issues == 0:
+            log.success("Sanity check passed")
+            return True
+
+        log.error(f"Sanity check failed with {issues} issues")
+        return False
+
+    except Exception as e:
+        log.error("Sanity check failed", exception=e)
+        return False
 
 def preprocess_trajectory(
         input_path,
@@ -203,27 +348,37 @@ def preprocess_trajectory(
     Returns:
         bool: True on success.
     """
-    L = wheelbase or 0.33
-    max_steer = max_steering or 0.5
-    min_vel = min_velocity or 0.1
+    L = wheelbase or DEFAULT_WHEELBASE
+    max_steer = max_steering or DEFAULT_MAX_STEER
+    min_vel = min_velocity or DEFAULT_MIN_SPEED
 
+    log = _get_logger()
     if config_path and os.path.exists(config_path):
         params = load_ros2_params(config_path)
         if not wheelbase:
-            L = params.get('wheelbase', 0.33)
+            L = params.get('wheelbase', DEFAULT_WHEELBASE)
         if not max_steering:
-            max_steer = params.get('max_steering_angle', 0.5)
+            max_steer = params.get('max_steering_angle', DEFAULT_MAX_STEER)
         if not min_velocity:
-            min_vel = params.get('min_speed', 0.1)
+            min_vel = params.get('min_speed', DEFAULT_MIN_SPEED)
 
     os.makedirs(os.path.dirname(os.path.abspath(output_path)), exist_ok=True)
-    return process_csv(input_path, output_path, L, max_steer, min_vel)
+    if not process_csv(input_path, output_path, L, max_steer, min_vel):
+        return False
+
+    return sanity_check(
+        output_path,
+        wheelbase=L,
+        max_steering=max_steer,
+        min_velocity=min_vel,
+    )
 
 
 # ── CLI ───────────────────────────────────────────────────────────────────────
 
 def create_sample_trajectory(output_dir="trajectory"):
     """Create a figure-8 sample trajectory for testing."""
+    log = _get_logger()
     os.makedirs(output_dir, exist_ok=True)
     sample_path = os.path.join(output_dir, "optimal_trajectory.csv")
 
@@ -238,11 +393,12 @@ def create_sample_trajectory(output_dir="trajectory"):
                 'v': max(0.7, 1.5 + 0.8 * math.cos(t)),
             })
 
-    print(f"[✓] Sample trajectory: {sample_path}")
+    log.success(f"Sample trajectory: {sample_path}")
     return sample_path
 
 
 if __name__ == '__main__':
+    log = _get_logger()
     parser = argparse.ArgumentParser(
         description='Preprocess trajectory CSV with kinematic bicycle model'
     )
@@ -250,29 +406,34 @@ if __name__ == '__main__':
     parser.add_argument('-o', '--output', help='Output CSV file path')
     parser.add_argument('--create-sample', action='store_true',
                         help='Create a figure-8 sample trajectory and exit')
+    parser.add_argument('--sanity-check', nargs='?', const='optimal_trajectory.csv',
+                        help='Run sanity check on CSV (default: optimal_trajectory.csv)')
     args = parser.parse_args()
 
     if args.create_sample:
         create_sample_trajectory()
         sys.exit(0)
 
+    if args.sanity_check is not None:
+        sys.exit(0 if sanity_check(args.sanity_check) else 1)
+
     if args.input and args.output:
         config_path = find_config_file()
         if config_path:
-            print(f"[✓] Config: {config_path}")
+            log.info(f"Config: {config_path}")
         sys.exit(0 if preprocess_trajectory(args.input, args.output, config_path) else 1)
 
     config_path = find_config_file()
     if config_path:
-        print(f"[✓] Config: {config_path}")
+        log.info(f"Config: {config_path}")
         params = load_ros2_params(config_path)
         inp = params.get('optimal_trajectory_path')
         out = params.get('reference_trajectory_path')
         if inp and out:
             sys.exit(0 if preprocess_trajectory(inp, out, config_path) else 1)
         else:
-            print("[✗] Missing trajectory paths in config")
+            log.error("Missing trajectory paths in config")
     else:
-        print("[!] No config file found at ../config/horizon_mapper.yaml")
-        print("Usage: python3 preprocess_trajectory.py -i input.csv -o output.csv")
+        log.warn("No config file found at ../config/horizon_mapper.yaml")
+        log.info("Usage: python3 preprocess_trajectory.py -i input.csv -o output.csv")
     sys.exit(1)
