@@ -2,8 +2,8 @@
 Horizon Mapper Node
 ===================
 
-Version: 1.5
-Author: Mohammed Azab (Mohammed@azab.io)
+Version: 1.0.0
+Author: Mohammed S. Azab Abdelazim (Mohammed@azab.io)
 
 Description:
 ------------

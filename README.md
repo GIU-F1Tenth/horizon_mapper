@@ -15,7 +15,7 @@ Think of it as the pit crew for your controller: it delivers clean, timely horiz
 - **Predictive Horizons**: Generates rolling trajectory horizons for LQR, MPC, and other optimal control policies
 - **State Estimation**: Integrates vehicle odometry and pose estimates for accurate reference tracking
 - **Real-time Publishing**: Provides continuous trajectory updates at configurable frequencies
-- **Validation**: Ensures trajectory data integrity with comprehensive validation checks
+- **Validation**: Ensures trajectory data integrity with validation and sanity checks
 
 ## Installation
 
@@ -41,7 +41,7 @@ Think of it as the pit crew for your controller: it delivers clean, timely horiz
 
 ### Basic Launch
 
-Launch the Horizon Mapper with config file parameters:
+Launch the Horizon Mapper with the config file parameters:
 
 ```bash
 ros2 launch horizon_mapper horizon_mapper.launch.py
@@ -108,74 +108,24 @@ horizon_mapper:
 | `/horizon_mapper/reference_path` | `nav_msgs/Path` | Full reference path for visualization |
 | `/horizon_mapper/path_ready` | `std_msgs/Bool` | Status indicator for trajectory readiness |
 
-## Dependencies
-
-### ROS2 Packages
-- `rclpy` - ROS2 Python client library
-- `std_msgs` - Standard ROS2 message types
-- `geometry_msgs` - Geometry-related message types
-- `nav_msgs` - Navigation message types
-- `tf_transformations` - Coordinate transformation utilities
-- `giu_f1t_interfaces` - Custom F1TENTH interface definitions
-
-### Python Packages
-- `numpy` - Numerical computing
-- `csv` - CSV file processing
-- `math` - Mathematical functions
-
 ## Architecture
 
 ```
-┌─────────────────┐    ┌─────────────────┐    ┌─────────────────┐
-│   Odometry      │───▶│  Horizon        │───▶│   Controller    │
-│   /car_state/   │    │  Mapper         │    │  (LQR / MPC)    │
-│   odom          │    │                 │    │                 │
-└─────────────────┘    │  ┌───────────┐  │    └─────────────────┘
+┌─────────────────┐    ┌─────────────────┐        ┌─────────────────┐
+│   Odometry      │───▶│  Horizon        │──path─▶│   Controller    │
+│   /car_state/   │    │  Mapper         │        │  (LQR / MPC)    │
+│   odom          │    │                 │        │                 │
+└─────────────────┘    │  ┌───────────┐  │        └─────────────────┘
                        │  │Trajectory │  │
-┌─────────────────┐    │  │Processing │  │    ┌─────────────────┐
-│   RViz Pose     │───▶│  └───────────┘  │───▶│   Visualization │
-│   /initialpose  │    │                 │    │   /rviz         │
-└─────────────────┘    └─────────────────┘    └─────────────────┘
-```
-
-## Contributing
-
-We welcome contributions! Please follow these steps:
-
-1. **Fork the repository**
-2. **Create a feature branch**: `git checkout -b feature/amazing-feature`
-3. **Make your changes** and ensure tests pass
-4. **Commit your changes**: `git commit -m 'Add amazing feature'`
-5. **Push to the branch**: `git push origin feature/amazing-feature`
-6. **Open a Pull Request**
-
-### Development Guidelines
-
-- Follow PEP 8 Python style guidelines
-- Add docstrings to all functions and classes
-- Include unit tests for new functionality
-- Update documentation as needed
-
-### Testing
-
-Run the test suite:
-
-```bash
-cd ~/ros2_ws
-colcon test --packages-select horizon_mapper
-colcon test-result --verbose
+┌─────────────────┐    │  │Processing │  │        ┌─────────────────┐
+│   RViz Pose     │───▶│  └───────────┘  │───────▶│   Visualization │
+│   /initialpose  │    │                 │        │   (RViz)        │
+└─────────────────┘    └─────────────────┘        └─────────────────┘
 ```
 
 ## License
 
 This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
-
-## Acknowledgments
-
-- **F1TENTH Community**: For the racing platform and ecosystem
-- **ROS2 Team**: For the excellent robotics middleware
-- **ETH Zurich PBL**: For the ForzaETH race stack inspiration
-- **Contributors**: Thanks to all who have contributed to this project
 
 ## Citation
 
@@ -183,8 +133,8 @@ If you use this package in your research, please cite:
 
 ```bibtex
 @software{horizon_mapper_2025,
-  title={Horizon Mapper: Trajectory Processing for F1TENTH Autonomous Racing},
-  author={Mohammed Abdelazim},
+  title={Horizon Mapper: Trajectory Publisher and visualizer for Autonomous Racing},
+  author={Mohammed S. Azab Abdelazim},
   year={2025},
   url={https://github.com/GIU-F1Tenth/horizon_mapper}
 }
