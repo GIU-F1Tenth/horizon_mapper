@@ -42,7 +42,7 @@ horizon_mapper_node:
     qos_depth: 10
 
     # Traversal direction — set to true to run the trajectory in reverse
-    reverse_direction: true
+    reverse_direction: false
 
     # ── Adaptive track geometry ─────────────────────────────────────────────
     # Set track_width to the total driveable width of your map in metres.
