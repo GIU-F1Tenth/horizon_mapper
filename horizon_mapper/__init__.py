@@ -3,7 +3,7 @@ Horizon Mapper Node
 ===================
 
 Version: 1.0.0
-Author: Mohammed S. Azab Abdelazim (Mohammed@azab.io)
+Author: Mohammed S. Azab Abdelazim (m.3zab@outlook.com)
 
 Description:
 ------------

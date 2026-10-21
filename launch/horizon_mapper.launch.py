@@ -5,7 +5,7 @@ Horizon Mapper Launch File
 
 Launches the horizon_mapper_node with proper parameter configuration.
 
-Author: Mohammed Azab (Mohammed@azab.io)
+Author: Mohammed Azab (m.3zab@outlook.com)
 """
 
 from launch import LaunchDescription
